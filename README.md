@@ -63,7 +63,7 @@
 
 ### Installation
 
-#### Option A: Nix (Recommended ❄️)
+#### Option A: Nix
 
 For a reproducible, isolated environment:
 
@@ -74,7 +74,7 @@ nix develop
 # The environment is now ready!
 ```
 
-#### Option B: Standard Pip 🐍
+#### Option B: Standard Pip
 
 ```bash
 git clone https://github.com/RomeoCavazza/shellgeist.git
@@ -120,10 +120,6 @@ export AI_MODEL_SMART="llama3"
 export AI_MODEL_FAST="mistral"
 ```
 
-## 📜 License
+## License
 
 Distributed under the MIT License. See `LICENSE` for more information.
-
-<div align="center">
-  <sub>Built with 💜 and ☕ by Romeo Cavazza.</sub>
-</div>
