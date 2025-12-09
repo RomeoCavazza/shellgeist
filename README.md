@@ -1,10 +1,14 @@
 # ShellGeist 👻
 
+<div align="center">
+  <img src="assets/logo.png" alt="ShellGeist Logo" width="200">
+</div>
+
 > **Your transparent, cyberpunk AI terminal agent.**
 
 ShellGeist is a Terminal User Interface (TUI) agent powered by LLMs (local or remote) designed to help developers code, navigate, and automate tasks directly within their terminal environment.
 
-![ShellGeist Preview](https://placehold.co/800x400/000000/00ff00?text=ShellGeist+TUI)
+![ShellGeist Preview](assets/screenshot.png)
 
 ## ✨ Features
 
