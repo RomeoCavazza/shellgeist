@@ -196,7 +196,9 @@ class AiLabTui(App):
         grid-columns: 25% 1fr;
         grid-rows: 10 1fr 3;
         grid-gutter: 0;
-        overflow: hidden;
+        overflow: hidden;  /* Pas de scroll sur l'écran principal */
+        height: 100%;      /* Force la hauteur du viewport */
+        width: 100%;
     }
 
     /* --- SIDEBAR (Row 1-2, Col 1) --- */
@@ -204,11 +206,12 @@ class AiLabTui(App):
         row-span: 2;
         column-span: 1;
         height: 100%;
+        width: 100%;
         border-right: heavy cyan;
         overflow-y: auto;
         scrollbar-size: 1 1;
         scrollbar-color: cyan;
-        scrollbar-background: rgba(0, 0, 0, 0);
+        scrollbar-background: transparent;
     }
 
     /* --- HEADER AREA (Row 1, Col 2) --- */
@@ -216,20 +219,21 @@ class AiLabTui(App):
         row-span: 1;
         column-span: 1;
         height: 100%;
+        width: 100%;
         layout: horizontal;
         overflow: hidden;
-        background: rgba(0, 0, 0, 0);
+        background: transparent;
     }
     
     SystemMonitor {
         width: 1fr;
         height: 100%;
-        background: rgba(0, 0, 0, 0);
+        background: transparent;
     }
     AgentStatus {
         width: 35;
         height: 100%;
-        background: rgba(0, 0, 0, 0);
+        background: transparent;
     }
 
     /* --- MAIN CONTENT (Row 2, Col 2) --- */
@@ -237,22 +241,24 @@ class AiLabTui(App):
         row-span: 1;
         column-span: 1;
         height: 100%;
+        width: 100%;
         border-top: heavy cyan;
         padding: 0 1;
         overflow-y: auto;
         scrollbar-size: 1 1;
         scrollbar-color: cyan;
-        scrollbar-background: rgba(0, 0, 0, 0);
-        background: rgba(0, 0, 0, 0);
+        scrollbar-background: transparent;
+        background: transparent;
     }
 
     /* --- FOOTER / INPUT (Row 3, Spans all) --- */
     #footer_area {
         row-span: 1;
         column-span: 2;
+        width: 100%;
         border-top: heavy cyan;
-        height: 3;
-        background: rgba(0, 0, 0, 0);
+        height: 100%; /* Remplit la row définie à 3 cellules */
+        background: transparent;
     }
 
     Input {
@@ -319,7 +325,27 @@ class AiLabTui(App):
         self.query_one(Input).focus()
         
         log = self.query_one(MainLog)
-        log.write("[bold green]SYSTEM READY.[/bold green]")
+        
+        # ASCII Intro
+        ghost_art = """
+⠀⠀⠀⠀⠀⠀⠀⢀⠤⠐⠀⠀⠒⠂⠄⡀⠀⠀
+⠀⠀⠀⠀⠀⠀⡠⠁⠀⠀⠀⠀⠀⠀⠀⢸⣦⠀
+⠀⠀⠀⠀⠀⠰⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠻⢃
+⠀⠀⠀⠀⢠⠃⠀⠀⠀⠀⢠⣄⠀⠀⠀⢀⣀⠘
+⠀⠀⠀⠀⠌⠀⠀⠀⠀⢀⠘⢍⠀⣄⠤⡨⠯⠀
+⠀⠀⠀⡐⠀⠀⠀⠀⠀⠈⠈⠃⠀⠀⠀⠑⠒⠸
+⠀⠀⢠⣱⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⠇
+⠀⡠⠻⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡌⠀
+⠔⠁⣼⣐⡄⠀⠀⠀⢠⠀⠀⠀⠀⡄⠀⡜⠀⠀
+⠑⠚⠉⠀⡄⠀⢀⠴⡏⠀⠀⢠⢞⣧⠌⠀⠀⠀
+⠀⠀⠀⠀⠑⠚⠓⠉⠗⠧⠒⠉⠉⠀⠀⠀⠀⠀
+"""
+        welcome_text = Text()
+        welcome_text.append(ghost_art, style="bold white")
+        welcome_text.append("\nHello, I'm ShellGeist.\n", style="bold cyan")
+        welcome_text.append("The ghost haunting your terminal.", style="italic dim white")
+        
+        log.write(Panel(Align.center(welcome_text), border_style="cyan", box=box.HEAVY))
         log.write(f"[dim]CWD: {self.repo_root}[/dim]")
         log.write("-" * 40)
 
