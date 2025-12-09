@@ -81,8 +81,3 @@ To configure models via env vars:
 export AI_MODEL_SMART="llama3"
 export AI_MODEL_FAST="mistral"
 ```
-
-##  लाइसेंस / License
-
-MIT License.
-
