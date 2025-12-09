@@ -32,7 +32,7 @@
           python -m venv .venv
           source .venv/bin/activate
           pip install --upgrade pip
-          pip install "openai" "langchain" "langgraph" "aider-chat" "textual"
+          pip install "openai>=1.0.0" "langchain" "langgraph" "aider-chat" "textual" "psutil"
         else
           source .venv/bin/activate
         fi
