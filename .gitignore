@@ -1,4 +1,15 @@
-.venv/
+# Python
 __pycache__/
-*.pyc
-.aider*
+*.py[cod]
+*.pyo
+
+# Environnements virtuels
+.venv/
+
+# Logs & artefacts locaux
+ai_lab_events.jsonl
+
+# Outils / IDE
+.env
+.vscode/
+.idea/
