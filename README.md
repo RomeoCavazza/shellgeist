@@ -2,8 +2,6 @@
 
   <img src="assets/logo.png" alt="ShellGeist Logo" width="240">
 
-  # ShellGeist 👻
-
   **The Ghost in Your Shell.**
   
   <p>
