@@ -1,5 +1,7 @@
 <div align="center">
 
+  <img alt="logo" width="120" src="assets/logo.png" />
+
   <h1>ShellGeist</h1>
 
   <p><strong>AI-powered code editing assistant for Neovim</strong></p>
