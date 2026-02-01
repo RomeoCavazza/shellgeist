@@ -1,0 +1,19 @@
+# python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+.dist-info/
+.venv/
+venv/
+
+# nix
+result
+.direnv/
+.envrc
+
+# editor
+.DS_Store
+*.swp
+*.swo
