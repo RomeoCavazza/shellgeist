@@ -20,10 +20,6 @@
   <img src="assets/screenshot_dashboard.png" alt="ShellGeist Dashboard" width="800" />
 </p>
 
-<p align="center">
-  <img src="assets/screenshot_ide.png" alt="ShellGeist IDE" width="800" />
-</p>
-
 ## Features
 
 - **AI-Powered Code Editing**: Generate and apply code changes using LLM-generated unified diffs
@@ -84,6 +80,10 @@ sg debug  # Check environment
 ```
 
 ## Usage
+
+<p align="center">
+  <img src="assets/screenshot_ide.png" alt="ShellGeist IDE" width="800" />
+</p>
 
 ### Neovim Commands
 
