@@ -5,7 +5,6 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
 
 
 @dataclass
@@ -20,7 +19,7 @@ class _Choice:
 
 @dataclass
 class _Resp:
-    choices: List[_Choice]
+    choices: list[_Choice]
 
 
 def _env_int(name: str, default: int) -> int:
@@ -38,7 +37,7 @@ class _ChatCompletions:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
 
-    def create(self, *, model: str, messages: List[Dict[str, str]]) -> _Resp:
+    def create(self, *, model: str, messages: list[dict[str, str]]) -> _Resp:
         url = f"{self.base_url}/chat/completions"
         payload = {"model": model, "messages": messages, "stream": False}
 
@@ -90,7 +89,7 @@ class OpenAICompatClient:
         self.chat = _Chat(base_url, api_key)
 
 
-def get_client(kind: str) -> Tuple[OpenAICompatClient, str]:
+def get_client(kind: str) -> tuple[OpenAICompatClient, str]:
     """
     kind: "fast" | "smart" (extensible)
     Uses OPENAI_BASE_URL + OPENAI_API_KEY.

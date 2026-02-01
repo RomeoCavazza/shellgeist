@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-import pytest
 from pathlib import Path
 
-from shellgeist.diff.apply import apply_unified_diff, PatchApplyError
+import pytest
+from shellgeist.diff.apply import PatchApplyError, apply_unified_diff
 from shellgeist.diff.guards import enforce_guards
 from shellgeist.protocol import handle_request
 from shellgeist.util_json import loads_obj
-
 
 # =============================================================================
 # Diff Application

@@ -2,11 +2,10 @@
 """ShellGeist Daemon - Unix socket server for RPC communication."""
 from __future__ import annotations
 
-import asyncio
 import argparse
+import asyncio
 import json
 import os
-import sys
 from typing import Any
 
 from shellgeist.protocol import handle_request
@@ -72,7 +71,7 @@ async def client_handler(
 async def run_server(socket_path: str) -> int:
     """Run the daemon server."""
     os.makedirs(os.path.dirname(socket_path), exist_ok=True)
-    
+
     try:
         os.unlink(socket_path)
     except FileNotFoundError:
@@ -117,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print version",
     )
-    
+
     args = parser.parse_args(argv)
 
     if args.version:

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import difflib
 from pathlib import Path
-from typing import Tuple
-
 
 _TRIPLE_DQ = '"' * 3
 _TRIPLE_SQ = "'" * 3
@@ -71,7 +69,7 @@ def _future_import_is_in_allowed_region(new: str) -> bool:
     return i < len(lines) and lines[i].lstrip().startswith("from __future__ import")
 
 
-def _guard_future_import(old: str, new: str) -> Tuple[bool, str]:
+def _guard_future_import(old: str, new: str) -> tuple[bool, str]:
     """
     Only enforce if the *old* file had a future import.
     """
@@ -140,7 +138,7 @@ def _allow_big_rewrite(instruction: str) -> bool:
     return any(k in s for k in keywords)
 
 
-def enforce_guards(*, relpath: str, instruction: str, old: str, new: str) -> Tuple[bool, str]:
+def enforce_guards(*, relpath: str, instruction: str, old: str, new: str) -> tuple[bool, str]:
     """
     Guardrails:
     - Block control chars in new content

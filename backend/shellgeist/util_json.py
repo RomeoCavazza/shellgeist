@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 
-
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*$", re.IGNORECASE)
 _UNQUOTED_KEY_RE = re.compile(r'([{\s,])([A-Za-z_][A-Za-z0-9_]*)\s*:')
 _SINGLE_QUOTE_KEY_RE = re.compile(r"{\s*'([^']+)'\s*:")

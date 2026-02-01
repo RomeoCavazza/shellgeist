@@ -5,7 +5,6 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-
 from shellgeist.safety import is_blocked
 from shellgeist.tools.coder import apply_edit, apply_full_replace, edit_plan
 from shellgeist.tools.planner import plan

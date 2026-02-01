@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import difflib
 import os
 import re
 import subprocess
 import tempfile
-from typing import Any, Dict, Tuple
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
+from shellgeist.diff.apply import PatchApplyError, apply_unified_diff
+from shellgeist.diff.guards import enforce_guards
 from shellgeist.models import get_client
 from shellgeist.util_json import loads_obj
-from shellgeist.diff.apply import apply_unified_diff, PatchApplyError
-from shellgeist.diff.guards import enforce_guards
-
 
 # =============================================================================
 # TRACE
@@ -244,7 +243,7 @@ def _ensure_display_diff(path: str, patch_hunks_only: str) -> str:
 # EMPTY FILE DIFF VALIDATOR
 # =============================================================================
 
-def _validate_diff_for_empty_old(diff: str) -> Tuple[bool, str]:
+def _validate_diff_for_empty_old(diff: str) -> tuple[bool, str]:
     """
     If OLD is empty, diff must be pure insertions:
     - no context lines starting with ' '
@@ -289,7 +288,7 @@ class _ModelCtx:
     model: str
 
 
-def _get_ctx(model_type: str, cache: Dict[str, _ModelCtx]) -> _ModelCtx:
+def _get_ctx(model_type: str, cache: dict[str, _ModelCtx]) -> _ModelCtx:
     ctx = cache.get(model_type)
     if ctx is not None:
         return ctx
@@ -299,7 +298,7 @@ def _get_ctx(model_type: str, cache: Dict[str, _ModelCtx]) -> _ModelCtx:
     return ctx
 
 
-def _call_model(*, model_type: str, system: str, user: str, cache: Dict[str, _ModelCtx]) -> Tuple[str, str]:
+def _call_model(*, model_type: str, system: str, user: str, cache: dict[str, _ModelCtx]) -> tuple[str, str]:
     ctx = _get_ctx(model_type, cache)
     r = ctx.client.chat.completions.create(
         model=ctx.model,
@@ -400,7 +399,7 @@ def _is_effectively_blank(s: str) -> bool:
     return _strip_bom_zw(s).strip() == ""
 
 
-def _future_import_guard(old: str, new: str) -> Tuple[bool, str]:
+def _future_import_guard(old: str, new: str) -> tuple[bool, str]:
     old_lines = (old or "").splitlines()
     if not any(l.lstrip().startswith("from __future__ import") for l in old_lines):
         return True, ""
@@ -645,7 +644,7 @@ def _fulltext_fallback(
     old: str,
     *,
     reason: str,
-    cache: Dict[str, _ModelCtx],
+    cache: dict[str, _ModelCtx],
 ) -> dict:
     system, user = _build_fulltext_prompts(path, instruction, old, repair=reason)
     raw, _ = _call_model(model_type="smart", system=system, user=user, cache=cache)
@@ -707,7 +706,7 @@ def edit_plan(path: str, instruction: str, *, root: Path) -> dict:
     if not file_path.exists():
         return {"ok": False, "error": "file_not_found", "file": path}
 
-    cache: Dict[str, _ModelCtx] = {}
+    cache: dict[str, _ModelCtx] = {}
     old = file_path.read_text(encoding="utf-8", errors="replace")
 
     system1, user1 = _build_prompts(path, instruction, old)

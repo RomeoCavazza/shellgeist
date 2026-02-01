@@ -56,14 +56,14 @@ def cmd_ping(args: argparse.Namespace) -> int:
     import socket
 
     sock_path = os.path.expanduser(args.socket)
-    
+
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.connect(sock_path)
         sock.sendall(b'{"cmd":"ping"}\n')
         response = sock.recv(4096).decode()
         sock.close()
-        
+
         data = json.loads(response)
         _jprint(data)
         return 0 if data.get("ok") else 1
@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="ShellGeist - AI-powered code editing assistant for Neovim",
     )
     p.add_argument("--version", "-V", action="store_true", help="Print version")
-    
+
     sub = p.add_subparsers(dest="cmd")
 
     # debug
