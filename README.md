@@ -16,6 +16,14 @@
 
 **ShellGeist** is a Neovim plugin that provides AI-driven code editing capabilities through a Unix socket daemon. It generates unified diffs using LLMs (compatible with OpenAI API, including Ollama) and applies them safely with comprehensive guardrails.
 
+<p align="center">
+  <img src="assets/screenshot_dashboard.png" alt="ShellGeist Dashboard" width="800" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshot_ide.png" alt="ShellGeist IDE" width="800" />
+</p>
+
 ## Features
 
 - **AI-Powered Code Editing**: Generate and apply code changes using LLM-generated unified diffs
