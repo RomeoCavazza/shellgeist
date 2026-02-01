@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img alt="logo" width="240" src="assets/logo.png" />
+  <img alt="logo" width="400" src="assets/logo.png" />
 
   <p><strong>AI-powered code editing assistant for Neovim</strong></p>
 
