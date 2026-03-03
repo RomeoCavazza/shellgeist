@@ -1,6 +1,7 @@
-"""Filesystem tools: read_file, list_directory, find_files."""
+"""Filesystem tools: read_file, write_file, list_files, get_repo_map."""
 from __future__ import annotations
 
+import difflib
 import os
 from pathlib import Path
 
@@ -74,15 +75,39 @@ class WriteFileInput(BaseModel):
 
 
 @registry.register(
-    description="Write content to a file. Overwrites if exists.",
+    description="Write content to a file. Overwrites if exists. Returns a unified diff when modifying an existing file.",
     input_model=WriteFileInput
 )
 def write_file(path: str | None = None, content: str = "", root: str = "", file_path: str | None = None) -> str:
     target = (path or file_path or "").strip()
     p = _resolve_repo_path(root, target)
     p.parent.mkdir(parents=True, exist_ok=True)
+
+    # Capture old content for diff
+    old_text = ""
+    existed = p.exists()
+    if existed:
+        try:
+            old_text = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     p.write_text(content, encoding="utf-8")
-    return f"Successfully wrote to {target}"
+
+    msg = f"Successfully wrote to {target}"
+    if existed and old_text != content:
+        diff_lines = list(difflib.unified_diff(
+            old_text.splitlines(keepends=True),
+            content.splitlines(keepends=True),
+            fromfile=f"a/{target}",
+            tofile=f"b/{target}",
+        ))
+        if diff_lines:
+            diff_str = "".join(diff_lines)[:2000]
+            msg += f"\n\nDiff:\n{diff_str}"
+    elif not existed:
+        msg += " (new file)"
+    return msg
 
 
 @registry.register(

@@ -211,14 +211,11 @@ function M.run_agent(goal)
       end
 
       local function run_agent()
-        local prefers_v5_events = false
-
-        local function handle_execution_event(ev)
+        local function handle_event(ev)
           if ev.type ~= "execution_event" or type(ev.event) ~= "table" then
             return false
           end
 
-          prefers_v5_events = true
           local event = ev.event
           local channel = tostring(event.channel or "")
           local content = tostring(event.content or "")
@@ -258,26 +255,14 @@ function M.run_agent(goal)
 
         sidebar.append_text(goal, "user")
         rpc.request(M._cfg.socket, { cmd = "agent_task", root = root, goal = goal, session_id = session_id }, function(ev)
-          if ev.status == "eof" then
-            return
-          end
-          if handle_execution_event(ev) then
-            return
-          end
-          if prefers_v5_events and (ev.type == "log" or ev.type == "status") then
-            return
-          end
+          if ev.status == "eof" then return end
+          if handle_event(ev) then return end
+          -- Legacy fallback (v4 backend compatibility)
           if ev.type == "log" then
             sidebar.append_text(ev.content, ev.log_type)
-            return
-          end
-          if ev.type == "status" then
+          elseif ev.type == "status" then
             sidebar.set_thinking(ev.thinking)
-            return
-          end
-          if ev.ok then
-            -- Final block handling
-          else
+          elseif not ev.ok then
             handle_result(ev)
           end
         end, { stream = true })
