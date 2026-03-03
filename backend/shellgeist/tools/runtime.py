@@ -57,6 +57,10 @@ def normalize_tool_args(
     if "file" not in args and isinstance(args.get("path"), str):
         args["file"] = args.get("path")
 
+    # Reverse: LLM may send "file" when the tool expects "path"
+    if "path" not in args and isinstance(args.get("file"), str):
+        args["path"] = args.get("file")
+
     if func_name in SHELL_SESSION_TOOLS and last_shell_session_id:
         sid = str(args.get("session_id") or "").strip()
         if not sid or "{" in sid or "}" in sid:

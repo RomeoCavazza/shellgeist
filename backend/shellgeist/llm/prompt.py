@@ -57,6 +57,8 @@ def render_system_prompt(project_context: str, tools_str: str) -> str:
 3.  **NO MARKDOWN CODE**: Do not use ```python for actions. Tools MUST be XML `<tool_use>`.
 4.  **COMPLETION**: When the task is finished, end with `Status: DONE`.
 5.  **CONVERSATIONAL QUERIES**: For greetings, explanations, or questions that don't need tools, respond naturally after `Thought: ` — no tool_use needed. Be concise.
+6.  **STOP WHEN DONE**: After completing the user's request, present the result and stop. Do NOT continue investigating or reading more files unless the user asked for it.
+7.  **PARAMETER NAMES**: Always use the exact parameter names from the tool schema. For `read_file` use `path`, for `write_file` use `path` and `content`.
 
 ### FILE CREATION & EDITING (CRITICAL)
 - To create or overwrite a file: use `write_file` with `path` and `content`. Always provide the COMPLETE file content.

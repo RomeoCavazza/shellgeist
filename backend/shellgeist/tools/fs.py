@@ -34,8 +34,8 @@ class ListFilesInput(BaseModel):
     description="Read the contents of a file.",
     input_model=ReadFileInput
 )
-def read_file(path: str | None = None, root: str = "", file_path: str | None = None) -> str:
-    target = (path or file_path or "").strip()
+def read_file(path: str | None = None, root: str = "", file_path: str | None = None, file: str | None = None) -> str:
+    target = (path or file or file_path or "").strip()
     p = _resolve_repo_path(root, target)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {target}")
