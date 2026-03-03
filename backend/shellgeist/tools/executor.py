@@ -78,7 +78,7 @@ async def execute_tool_call(
         )
         await log(f"Calling: {func_name}", type="action", meta=tool_meta)
         res_str = str(res)
-        await log(res_str[:500], type="observation")
+        await log(res_str[:4000], type="observation")
         return ToolExecutionOutcome(kind="observation", func_name=func_name, observation=res_str, last_shell_session_id=last_shell_session_id)
 
     code_preview = code_preview_for_tool(func_name, args)
@@ -168,7 +168,7 @@ async def execute_tool_call(
     blocked_outcome, blocked_msg = loop_guard.record_outcome(func_name, args, res_str)
     if blocked_outcome and blocked_msg:
         await log(blocked_msg, type="info", meta=tool_meta)
-    await log(res_str[:500], type="observation")
+    await log(res_str[:4000], type="observation")
 
     return ToolExecutionOutcome(
         kind="observation",

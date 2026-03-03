@@ -184,20 +184,29 @@ end
 
 local function render_response(text)
   local header = "󰚩 Assistant"
-  local body = compact(text, 300)
-  local start = buf_append({ header, body, "" })
-  if start then
-    hl_range(start, 1, "SGResponse")
-    hl_range(start + 1, 1, "SGResponseBody")
+  local start = buf_append({ header })
+  if start then hl_range(start, 1, "SGResponse") end
+  -- Render full multi-line response body
+  local body_lines = vim.split(sanitize(text), "\n", { plain = true })
+  local body_start = buf_append(body_lines)
+  if body_start then
+    hl_range(body_start, #body_lines, "SGResponseBody")
   end
+  buf_append({ "" })
   scroll_bottom()
 end
 
 local function render_thinking(text)
   if is_noise(text) then return end
-  local line = "󰋘 " .. compact(text, 160)
-  local start = buf_append({ line })
+  local lines = vim.split(sanitize(text), "\n", { plain = true })
+  local first = "󰋘 " .. (lines[1] or "")
+  local start = buf_append({ first })
   if start then hl_range(start, 1, "SGThinking") end
+  if #lines > 1 then
+    local rest = vim.list_slice(lines, 2)
+    local rs = buf_append(rest)
+    if rs then hl_range(rs, #rest, "SGThinking") end
+  end
   scroll_bottom()
 end
 
@@ -283,9 +292,9 @@ end
 local function render_observation(text, meta)
   local file = (meta and meta.file) or ""
   local label = file ~= "" and ("󱍬 " .. file) or "󱍬 Result"
-  local summary = summarize_obs(text)
-  local body = { summary }
-  local card = build_card(label, body, 4)
+  local raw = sanitize(text)
+  local body_lines = vim.split(raw, "\n", { plain = true })
+  local card = build_card(label, body_lines, 30)
   local start = buf_append(card)
   if start then
     hl_range(start, 1, "SGCardResult")
