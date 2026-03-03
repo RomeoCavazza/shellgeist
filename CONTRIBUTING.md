@@ -52,20 +52,66 @@ mypy backend/shellgeist/ --ignore-missing-imports
 ```
 shellgeist/
 ├── backend/
-│   └── shellgeist/
-│       ├── cli.py          # CLI entry point
-│       ├── daemon.py       # Daemon entry point
-│       ├── protocol.py     # RPC protocol handler
-│       ├── models.py       # LLM client
-│       ├── tools/          # Core functionality
-│       │   ├── coder.py    # Code editing logic
-│       │   ├── planner.py  # Task planning
-│       │   └── shell.py    # Shell command generation
-│       └── diff/           # Diff application
-│           ├── apply.py    # Unified diff application
-│           └── guards.py   # Safety guardrails
-├── nvim/                   # Neovim plugin (Lua)
-└── tests/                  # Test suite
+│   ├── shellgeist/
+│   │   ├── __init__.py       # Package root, __version__
+│   │   ├── cli.py            # CLI entry point (shellgeist command)
+│   │   ├── sgd.py            # Daemon entry point (sgd command)
+│   │   ├── config.py         # Environment variable configuration
+│   │   ├── context.py        # Project context discovery
+│   │   ├── util_json.py      # Lenient JSON parser for LLM output
+│   │   ├── agent/            # Core agent loop & state
+│   │   │   ├── core.py       # Agent class, agentic loop
+│   │   │   ├── messages.py   # Message building helpers
+│   │   │   ├── orchestrator.py # Multi-step orchestration
+│   │   │   └── state.py      # Agent state management
+│   │   ├── diff/             # Diff generation & application
+│   │   │   ├── apply.py      # Unified diff application
+│   │   │   └── guards.py     # Diff safety guardrails
+│   │   ├── io/               # I/O primitives
+│   │   │   ├── events.py     # UI event emitter
+│   │   │   ├── results.py    # Result formatting
+│   │   │   ├── telemetry.py  # Telemetry utilities
+│   │   │   └── transport.py  # Socket send_json / safe_drain
+│   │   ├── llm/              # LLM client layer
+│   │   │   ├── client.py     # OpenAI-compatible client
+│   │   │   ├── prompt.py     # System prompt construction
+│   │   │   └── stream.py     # Streaming response handler
+│   │   ├── protocol/         # JSON-lines RPC protocol
+│   │   │   ├── handler.py    # Command dispatcher
+│   │   │   ├── helpers.py    # Protocol utilities
+│   │   │   └── models.py     # Request/response models
+│   │   ├── safety/           # Safety & guardrails
+│   │   │   ├── blocked.py    # Blocked command patterns
+│   │   │   ├── loop_guard.py # Infinite loop detection
+│   │   │   ├── retry.py      # Retry configuration
+│   │   │   └── verify.py     # Output verification
+│   │   ├── session/          # Session & history
+│   │   │   ├── ops.py        # Session operations
+│   │   │   ├── repair.py     # Session repair utilities
+│   │   │   └── store.py      # SQLite history store
+│   │   └── tools/            # Tool implementations
+│   │       ├── base.py       # Tool base class
+│   │       ├── coder.py      # Code editing tool
+│   │       ├── executor.py   # Tool executor
+│   │       ├── fs.py         # Filesystem tool
+│   │       ├── parser.py     # Tool output parsing
+│   │       ├── policy.py     # Tool policy enforcement
+│   │       ├── preview.py    # Diff preview tool
+│   │       ├── runtime.py    # Runtime tool registry
+│   │       └── shell.py      # Shell command tool
+│   └── tests/                # Test suite
+│       ├── test_imports.py   # Smoke tests for all imports
+│       └── test_safety.py    # Safety module tests
+├── nvim/                     # Neovim plugin (Lua)
+│   ├── plugin/shellgeist.lua # Plugin loader
+│   └── lua/shellgeist/
+│       ├── init.lua          # Plugin setup & orchestration
+│       ├── sidebar.lua       # Chat sidebar UI (NUI)
+│       ├── rpc.lua           # Unix socket RPC client
+│       └── diff.lua          # Diff preview integration
+├── flake.nix                 # Nix flake (develop / run / build)
+├── pyproject.toml            # Python packaging
+└── shellgeist                # Wrapper script (bash)
 ```
 
 ## Code Style

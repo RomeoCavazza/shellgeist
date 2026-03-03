@@ -1,5 +1,7 @@
 """ShellGeist - AI-powered code editing assistant for Neovim."""
 
+__all__ = ["__version__"]
+
 try:
     from importlib.metadata import version as _meta_version
 

@@ -807,5 +807,9 @@ def run_nix_python(
 
 
 def plan_shell(task: str, *, root: Path) -> list[str]:
-    # legacy planner placeholder
-    return [f"echo 'TODO shell plan for {task}'"]
+    """Return a list of shell commands for *task*.
+
+    This is a legacy placeholder — the agent loop handles shell planning
+    via tool_use now.  Kept for the :SGShell quick-command path.
+    """
+    return [f"echo 'Shell planning not yet implemented for: {task}'"]

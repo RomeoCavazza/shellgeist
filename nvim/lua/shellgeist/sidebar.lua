@@ -279,24 +279,9 @@ function M.open()
         winhighlight = "Normal:Normal,FloatBorder:ShellGeistBorder",
       },
     }, {
-      on_submit = function(value)
-        -- NOTE: nui.input closes itself on <CR> by default.
-        -- We override <CR> keymaps below to submit without unmounting.
-        if value and value ~= "" then
-          vim.schedule(function()
-            dispatch_sgagent(value)
-          end)
-        end
-      end,
+      -- No-op: we override <CR> after mount to submit without unmounting.
+      on_submit = function() end,
     })
-
-    -- Keep sidebar open on Enter: submit from prompt buffer instead of default close-on-submit.
-    prompt:map("i", "<CR>", function()
-      submit_from_prompt(prompt)
-    end, { noremap = true, nowait = true })
-    prompt:map("n", "<CR>", function()
-      submit_from_prompt(prompt)
-    end, { noremap = true, nowait = true })
 
     M.chat = chat
     M.prompt = prompt
@@ -323,7 +308,15 @@ function M.open()
 
     M.layout:mount()
     M.render_welcome()
-    
+
+    -- Override <CR> AFTER mount so NUI's internal on_submit binding is replaced.
+    prompt:map("i", "<CR>", function()
+      submit_from_prompt(prompt)
+    end, { noremap = true, nowait = true })
+    prompt:map("n", "<CR>", function()
+      submit_from_prompt(prompt)
+    end, { noremap = true, nowait = true })
+
     -- Keymaps
     M.chat:map("n", "q", function() M.toggle() end, { noremap = true })
     M.prompt:map("n", "<Esc>", function()
