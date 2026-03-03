@@ -183,7 +183,7 @@ local function render_user(text)
 end
 
 local function render_response(text)
-  local header = " ShellGeist"
+  local header = "󰚩 Assistant"
   local body = compact(text, 300)
   local start = buf_append({ header, body, "" })
   if start then
@@ -495,7 +495,7 @@ function M.append_text(text, msg_type, meta)
     local is_first = not M._streaming_assistant
     if is_first then
       M._streaming_assistant = true
-      local hdr = buf_append({ " ShellGeist" })
+      local hdr = buf_append({ "󰚩 Assistant" })
       if hdr then hl_range(hdr, 1, "SGResponse") end
       buf_append({ "" })  -- content starts on new line
     end

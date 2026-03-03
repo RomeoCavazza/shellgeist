@@ -29,6 +29,20 @@ class ToolCallQueue:
         return item
 
 
+def _looks_like_final_response(content: str) -> bool:
+    """Heuristic: if the LLM produced a conversational response without
+    any tool_use attempt, treat it as a final answer rather than looping
+    forever asking for 'Status: DONE'."""
+    stripped = content.strip()
+    if not stripped:
+        return False
+    # Must have some meaningful text (not just a Thought: line)
+    lines = [l.strip() for l in stripped.splitlines() if l.strip()]
+    non_thought = [l for l in lines if not l.lower().startswith("thought:")]
+    # If there's at least one line of actual content, consider it final
+    return len(non_thought) >= 1
+
+
 def decide_no_tool_action(
     content: str,
     *,
@@ -47,9 +61,15 @@ def decide_no_tool_action(
         )
         return NoToolDecision(action="continue", feedback=feedback)
 
+    # Allow conversational / final answers without requiring 'Status: DONE'
+    if _looks_like_final_response(content):
+        if completion_blocker:
+            return NoToolDecision(action="continue", feedback=completion_blocker)
+        return NoToolDecision(action="complete", final_response=extract_final_response(content))
+
     return NoToolDecision(
         action="continue",
-        feedback="FAILURE: No tool calls and no 'Status: DONE'. Use a tool to proceed or say 'Status: DONE' if finished.",
+        feedback="FAILURE: No tool calls and no final response. Use a tool to proceed or provide a final answer.",
     )
 
 

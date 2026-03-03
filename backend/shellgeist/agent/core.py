@@ -8,7 +8,6 @@ from typing import Any
 from shellgeist.agent.messages import (
     NO_ACTIONABLE_DECISION,
     SCHEMA_ERROR_FINAL_RESPONSE,
-    SMALL_TALK_REPLY,
     TOOL_EXECUTION_FAILED_DEFAULT,
     session_repaired_message,
     stream_failed_after_retries,
@@ -32,7 +31,6 @@ from shellgeist.protocol.helpers import (
     extract_actionable_thought,
     extract_canonical_response,
     has_markdown_without_tool_calls,
-    is_small_talk,
 )
 from shellgeist.safety import LoopGuard, LoopGuardConfig, RetryConfig, RetryEngine, VerifyRuntime
 from shellgeist.session import repair_conversation_history
@@ -101,14 +99,8 @@ class Agent:
         # 2. Append new goal
         append_user_goal_once(self.history, session_id=session_id, goal=goal)
 
-        # Fast-path for small talk: keep UX concise and avoid autonomous loop noise.
-        if is_small_talk(goal):
-            reply = SMALL_TALK_REPLY
-            self.history.append({"role": "assistant", "content": reply})
-            save_assistant_message(session_id=session_id, content=reply)
-            await _log(reply, type="assistant")
-            await _emit_execution_event("status", "", phase="done", meta={"thinking": False})
-            return completed_result(logs=[reply])
+        # Small talk is handled by the LLM like any other query.
+        # No hardcoded fast-path — let the model respond naturally.
 
         max_steps = 15
         logs = []
