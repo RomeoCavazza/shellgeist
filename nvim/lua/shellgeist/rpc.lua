@@ -88,13 +88,14 @@ function M.request(sock_path, payload, cb, opts)
           
           local obj, derr = decode_json(one)
           if obj then
-            vim.schedule(function() safe_cb(cb, obj) end)
             if not opts.stream then
+              -- Non-streaming: let finish() be the sole caller of cb
+              -- to avoid calling cb twice (once here, once in finish).
               finish(obj)
               return
             end
+            vim.schedule(function() safe_cb(cb, obj) end)
           else
-            -- if not streaming, we should probably fail?
             if not opts.stream then
               finish({ type = "result", ok = false, error = derr or "bad_json" })
               return

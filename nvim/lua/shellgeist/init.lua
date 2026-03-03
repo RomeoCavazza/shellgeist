@@ -106,9 +106,12 @@ local function ensure_daemon(cb)
   local socket = M._cfg.socket
   
   -- Probe the socket instead of just checking file existence
+  local called = false
   rpc.request(socket, { cmd = "ping" }, function(ev)
     if ev.status == "eof" then return end -- Ignore EOF message for non-streaming pings
-    
+    if called then return end -- Guard against double callback
+    called = true
+
     if ev.ok then
       cb()
     else
