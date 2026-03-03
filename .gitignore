@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 .pytest_cache/
+.ruff_cache/
 *.egg-info/
 .dist-info/
 .venv/
@@ -12,6 +13,10 @@ venv/
 result
 .direnv/
 .envrc
+
+# build / temp artifacts
+*.qcow2
+test_bin/
 
 # editor
 .DS_Store

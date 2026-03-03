@@ -43,7 +43,7 @@ local function handle_result(ev, on_ok)
   end
   if ev.ok then
     if on_ok then
-      on_ok(ev)
+      on_ok(ev.data or {}, ev)
     end
   else
     local err = ev.error or "error"
@@ -63,15 +63,256 @@ local function open_diff_fallback(diff_text, title)
   vim.bo.filetype = "diff"
 end
 
+function M.reload_history(session_id, opts)
+  session_id = session_id or "default"
+  opts = opts or {}
+  local on_done = opts.on_done
+  local skip_last_user_if_content = opts.skip_last_user_if_content
+
+  rpc.request(M._cfg.socket, { cmd = "get_history", session_id = session_id }, function(ev)
+    if ev.ok and ev.data and ev.data.history then
+      sidebar.render_welcome()
+      local history = ev.data.history
+      local skip_user_idx = nil
+      if skip_last_user_if_content then
+        for i = #history, 1, -1 do
+          local msg = history[i]
+          if msg.role == "user" and msg.content == skip_last_user_if_content then
+            skip_user_idx = i
+            break
+          end
+        end
+      end
+
+      for i, msg in ipairs(history) do
+        if skip_user_idx and i == skip_user_idx then
+          -- Skip
+        else
+          sidebar.append_text(msg.content, msg.role)
+        end
+      end
+      if on_done then
+        on_done()
+      end
+    else
+      if on_done then
+        on_done()
+      end
+    end
+  end)
+end
+
+local function ensure_daemon(cb)
+  local socket = M._cfg.socket
+  
+  -- Probe the socket instead of just checking file existence
+  rpc.request(socket, { cmd = "ping" }, function(ev)
+    if ev.status == "eof" then return end -- Ignore EOF message for non-streaming pings
+    
+    if ev.ok then
+      cb()
+    else
+      -- If ping fails (likely ECONNREFUSED), try to spawn
+      M._spawn_daemon(cb)
+    end
+  end)
+end
+
+function M._spawn_daemon(cb)
+  local socket = M._cfg.socket
+  
+  -- We need the project root where the 'shellgeist' wrapper lives.
+  local wrapper = "shellgeist"
+  
+  -- Fallback logic for finding the wrapper if not in PATH
+  if vim.fn.executable(wrapper) == 0 then
+    local plugin_path = debug.getinfo(1).source:sub(2):match("(.*/)")
+    local project_path = vim.fn.fnamemodify(plugin_path .. "../../..", ":p:h")
+    wrapper = project_path .. "/shellgeist"
+  end
+
+  if vim.fn.executable(wrapper) == 0 then
+    notify("Error: ShellGeist wrapper not found.", vim.log.levels.ERROR)
+    return
+  end
+
+  vim.fn.jobstart({ wrapper, "--daemon" }, {
+    on_stderr = function(_, data)
+      local debug_enabled = (vim.env.SHELLGEIST_DEBUG == "1")
+      local lines = {}
+      for _, ln in ipairs(data or {}) do
+        local s = tostring(ln or "")
+        if s ~= "" then
+          if s:match("^DEBUG") then
+            if debug_enabled then
+              table.insert(lines, s)
+            end
+          else
+            table.insert(lines, s)
+          end
+        end
+      end
+      local msg = table.concat(lines, "\n")
+      if msg ~= "" then
+        print("[ShellGeist Daemon Error] " .. msg)
+      end
+    end,
+    on_exit = function(_, code)
+      if code ~= 0 then notify("Daemon failed to start (exit code " .. code .. ")", vim.log.levels.ERROR) end
+    end,
+  })
+
+  -- Wait for the daemon to respond to a ping (robust check)
+  local attempts = 0
+  local timer = vim.loop.new_timer()
+  timer:start(500, 500, vim.schedule_wrap(function()
+    attempts = attempts + 1
+    
+    rpc.request(socket, { cmd = "ping" }, function(ev)
+      if timer:is_closing() then return end
+      if ev.ok then
+        timer:stop()
+        timer:close()
+        -- Do not reload_history here: when user is sending a goal we'd duplicate "User: goal"
+        cb()
+      elseif attempts > 20 then
+        timer:stop()
+        timer:close()
+        notify("Timed out waiting for daemon to respond. Try running './shellgeist --daemon' manually.", vim.log.levels.ERROR)
+      end
+    end)
+  end))
+end
+
+function M.run_agent(goal)
+  local ok_run, run_err = pcall(function()
+    goal = tostring(goal or "")
+    if goal == "" then
+      local ok_open, err_open = pcall(sidebar.open)
+      if not ok_open then
+        notify("sidebar.open failed: " .. tostring(err_open), vim.log.levels.ERROR)
+        return
+      end
+      ensure_daemon(function()
+        local session_id = vim.fn.sha256(project_root())
+        M.reload_history(session_id)
+      end)
+      return
+    end
+
+    ensure_daemon(function()
+      local root = project_root()
+      local session_id = vim.fn.sha256(root)
+      local was_open = sidebar.is_open()
+      local ok_open, err_open = pcall(sidebar.open)
+      if not ok_open then
+        notify("sidebar.open failed: " .. tostring(err_open), vim.log.levels.ERROR)
+        return
+      end
+
+      local function run_agent()
+        local prefers_v5_events = false
+
+        local function handle_execution_event(ev)
+          if ev.type ~= "execution_event" or type(ev.event) ~= "table" then
+            return false
+          end
+
+          prefers_v5_events = true
+          local event = ev.event
+          local channel = tostring(event.channel or "")
+          local content = tostring(event.content or "")
+          local phase = tostring(event.phase or "")
+          local meta = type(event.meta) == "table" and event.meta or {}
+
+          if channel == "status" then
+            local thinking = false
+            if type(meta.thinking) == "boolean" then
+              thinking = meta.thinking
+            elseif phase == "thinking" or phase == "streaming" or phase == "tool_use" then
+              thinking = true
+            end
+            sidebar.set_thinking(thinking)
+            return true
+          end
+
+          if channel == "reasoning" then
+            sidebar.append_text(content, "thinking", meta)
+          elseif channel == "response" then
+            if meta.chunk then
+              sidebar.append_text(content, "response_chunk", meta)
+            else
+              sidebar.append_text(content, "response", meta)
+            end
+          elseif channel == "tool_call" then
+            sidebar.append_text(content, "action", meta)
+          elseif channel == "code" then
+            sidebar.append_text(content, "code", meta)
+          elseif channel == "tool_result" then
+            sidebar.append_text(content, "observation", meta)
+          elseif channel == "error" then
+            sidebar.append_text(content, "error", meta)
+          end
+          return true
+        end
+
+        sidebar.append_text(goal, "user")
+        rpc.request(M._cfg.socket, { cmd = "agent_task", root = root, goal = goal, session_id = session_id }, function(ev)
+          if ev.status == "eof" then
+            return
+          end
+          if handle_execution_event(ev) then
+            return
+          end
+          if prefers_v5_events and (ev.type == "log" or ev.type == "status") then
+            return
+          end
+          if ev.type == "log" then
+            sidebar.append_text(ev.content, ev.log_type)
+            return
+          end
+          if ev.type == "status" then
+            sidebar.set_thinking(ev.thinking)
+            return
+          end
+          if ev.ok then
+            -- Final block handling
+          else
+            handle_result(ev)
+          end
+        end, { stream = true })
+      end
+
+      if was_open then
+        run_agent()
+      else
+        M.reload_history(session_id, {
+          skip_last_user_if_content = goal,
+          on_done = run_agent
+        })
+      end
+    end)
+  end)
+  if not ok_run then
+    notify("run_agent failed: " .. tostring(run_err), vim.log.levels.ERROR)
+  end
+end
+
 -- Commands
 vim.api.nvim_create_user_command("SGSidebar", function()
-  sidebar.open()
+  sidebar.toggle()
 end, {})
 
+vim.api.nvim_create_user_command("SGAgent", function(opts)
+  M.run_agent(opts.args)
+end, { nargs = "*" })
+
 vim.api.nvim_create_user_command("SGPing", function()
-  rpc.request(M._cfg.socket, { cmd = "ping" }, function(ev)
-    handle_result(ev, function()
-      notify("ok")
+  ensure_daemon(function()
+    rpc.request(M._cfg.socket, { cmd = "ping" }, function(ev)
+      handle_result(ev, function()
+        notify("ok")
+      end)
     end)
   end)
 end, {})

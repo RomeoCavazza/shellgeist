@@ -41,6 +41,7 @@ classifiers = [
 ]
 dependencies = [
     "anyio>=4.0.0",
+    "pydantic>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -60,7 +61,7 @@ Changelog = "https://github.com/RomeoCavazza/shellgeist/blob/main/CHANGELOG.md"
 
 [project.scripts]
 shellgeist = "shellgeist.cli:main"
-sgd = "shellgeist.daemon:main"
+sgd = "shellgeist.sgd:cli_main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -99,4 +100,3 @@ disallow_untyped_defs = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["backend/tests"]

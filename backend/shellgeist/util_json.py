@@ -1,3 +1,4 @@
+"""Lenient JSON parser: handles truncated, malformed, and partial JSON."""
 from __future__ import annotations
 
 import json

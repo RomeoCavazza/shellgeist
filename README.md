@@ -1,199 +1,80 @@
 <div align="center">
-
   <img alt="logo" width="400" src="assets/logo.png" />
-
-  <p><strong>AI-powered code editing assistant for Neovim</strong></p>
-
+  <p><strong>The "Tout Terrain" Autonomous Developer Agent for Neovim</strong></p>
 </div>
 
 <p align="center">
-
   <a href="https://neovim.io/" target="_blank"><img src="https://img.shields.io/static/v1?style=flat-square&label=Neovim&message=v0.9%2b&logo=neovim&labelColor=282828&logoColor=8faa80&color=414b32" alt="Neovim: v0.9+" /></a>
-
   <a href="https://www.python.org/" target="_blank"><img src="https://img.shields.io/static/v1?style=flat-square&label=Python&message=3.11%2b&logo=python&logoColor=3776ab&labelColor=282828&color=347D39" alt="Python: 3.11+" /></a>
-
 </p>
 
-**ShellGeist** is a Neovim plugin that provides AI-driven code editing capabilities through a Unix socket daemon. It generates unified diffs using LLMs (compatible with OpenAI API, including Ollama) and applies them safely with comprehensive guardrails.
+**ShellGeist** is no longer just a plugin—it's a fully autonomous AI coding assistant. It reasons, plans, and executes code changes directly in your repository using a native tool-calling loop.
 
-<p align="center">
-  <img src="assets/screenshot_dashboard.png" alt="ShellGeist Dashboard" width="800" />
-</p>
+## 🚀 Key Features
 
-## Features
+- **Autonomous Agentic Loop**: ShellGeist uses an "Iteration" loop (Thought -> Action -> Observation) to solve complex goals.
+- **Dual-Model Routing**: 
+  - **Fast (3B/7B)**: Instant planning and light iterations.
+  - **Smart (32B+)**: Surgical precision for code edits and verification.
+- **Global Project Context**: The agent sees your whole repo via `get_repo_map`. No more manual file traversal.
+- **Persistent Terminal Sessions**: Built-in PTY shell sessions for stateful workflows (`nix-shell`, `export`, `cd`, virtualenv activation).
+- **Magical Setup**: No manual daemon starting. Neovim auto-spawns the backend when you need it.
+- **Persistent History**: All chats are saved in SQLite (`~/.cache/shellgeist/history.db`).
+- **Unified CLI**: Use `./shellgeist "Goal"` in the terminal or `:SGAgent` in Neovim.
 
-- **AI-Powered Code Editing**: Generate and apply code changes using LLM-generated unified diffs
-- **Safe Patch Application**: Comprehensive guardrails prevent dangerous rewrites and syntax errors
-- **Neovim Integration**: Seamless integration via Unix socket RPC with intuitive keybindings
-- **Robust Error Handling**: Fallback mechanisms from diff-based to full-text replacement when needed
-- **Future Import Protection**: Automatic preservation of Python `__future__` imports
-- **Git Integration**: Built-in git status, staging, and restore commands
+## 📦 Instant Installation
 
-## Architecture
-
-ShellGeist follows a client-server architecture:
-
-- **Backend Daemon** (`sgd.py`): Async Unix socket server handling RPC requests
-- **Neovim Plugin** (`nvim/`): Lua client with diff preview and keybindings
-- **CLI Tool** (`cli/sg.py`): Command-line interface for debugging and testing
-
-## Installation
-
-### Prerequisites
-
-- Neovim 0.9+
-- Python 3.11+
-- Ollama (or compatible OpenAI API endpoint)
-
-### Setup
-
-1. **Install the plugin** (using your preferred Neovim package manager):
-
-```lua
--- lazy.nvim example
-{
-  "your-username/shellgeist",
-  build = "pip install -e .",
-  -- ... other config
-}
-```
-
-2. **Configure environment variables**:
+Clone and run the magic installer:
 
 ```bash
-export OPENAI_BASE_URL="http://127.0.0.1:11434/v1"  # Ollama default
-export OPENAI_API_KEY="ollama"
-export SHELLGEIST_MODEL_FAST="deepseek-coder:6.7b"
-export SHELLGEIST_MODEL_SMART="deepseek-coder-v2:16b-lite-instruct-q4_K_M"
+git clone https://github.com/your-username/shellgeist
+cd shellgeist
+./install.sh
+source ~/.bashrc
 ```
 
-3. **Start the daemon**:
+ShellGeist is now globally available as `shellgeist`.
+
+## 🛠️ Configuration
+
+All settings are driven by environment variables (see `backend/shellgeist/config.py`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_BASE_URL` | `http://127.0.0.1:11434/v1` | Ollama/OpenAI-compatible API base |
+| `OPENAI_API_KEY` | `ollama` | API key (Ollama ignores it) |
+| `SHELLGEIST_MODEL` | `qwen2.5-coder:7b` | Preferred model (7b = fast; use 32b for heavier tasks) |
+| `SHELLGEIST_HTTP_TIMEOUT` | `300` | HTTP timeout in seconds (increase for slow models) |
+| `SHELLGEIST_MODEL_FALLBACK_KEYWORDS` | `coder,qwen,llama,mistral` | Comma-separated keywords for model discovery |
+
+Example in `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-python -m shellgeist.sgd
+export SHELLGEIST_MODEL="qwen2.5-coder:7b"   # Faster, smaller model
+export SHELLGEIST_HTTP_TIMEOUT=600           # For slow/large models
 ```
 
-Or use the CLI:
-
-```bash
-sg debug  # Check environment
-```
-
-## Usage
-
-<p align="center">
-  <img src="assets/screenshot_ide.png" alt="ShellGeist IDE" width="800" />
-</p>
-
-### Neovim Commands
+## ⌨️ Neovim Usage
 
 | Command | Description |
 |---------|-------------|
-| `:SGEdit <file> <instruction>` | Generate and preview a diff for editing a file |
-| `:SGStatus` | Show git status |
-| `:SGPlan <goal>` | Generate a plan for a goal (placeholder) |
-| `:SGShell <task>` | Plan shell commands for a task (placeholder) |
-| `:SGPing` | Test daemon connectivity |
+| `<leader>as` | Toggle the Modern Chat Sidebar (Nui) |
+| `<leader>ag` | Direct Prompt (Floating Input) |
+| `:SGAgent <goal>` | Start an autonomous task |
 
-### Diff Preview Keybindings
+## 🛡️ Guardrails
 
-When viewing a diff preview:
+ShellGeist includes "Crisis-Proof" safety:
+- **Syntax Validation**: Python code is compiled before being saved.
+- **Rewrite Detection**: Blocks violent rewrites unless explicitly intended.
+- **Future Import Protection**: Keeps Python `__future__` imports where they belong.
+- **Atomic Writes**: Zero risk of file corruption during edits.
 
-- `a` - Apply patch
-- `F` - Apply full replace
-- `s` - Stage file in git
-- `R` - Restore file from git
-- `q` - Close (reject)
+## 🏗️ Architecture
 
-### CLI Usage
+- **Backend** (Python/Asyncio): Tool-calling engine and SQLite history.
+- **Frontend** (Lua/Nui): Professional sidebar with real-time thought streaming.
+- **CLI Wrapper**: Binary that handles Nix/Python environments automatically.
 
-```bash
-# Debug environment
-sg debug
-
-# Generate edit plan (returns JSON)
-sg edit-plan <file> "<instruction>"
-```
-
-## Configuration
-
-### Environment Variables
-
-- `OPENAI_BASE_URL`: API endpoint (default: `http://127.0.0.1:11434/v1`)
-- `OPENAI_API_KEY`: API key (default: `"ollama"`)
-- `SHELLGEIST_MODEL_FAST`: Fast model for quick operations
-- `SHELLGEIST_MODEL_SMART`: Smart model for complex edits
-- `SHELLGEIST_TRACE=1`: Enable debug tracing
-- `SHELLGEIST_HTTP_TIMEOUT`: HTTP timeout in seconds (default: 120)
-
-### Neovim Configuration
-
-```lua
-require("shellgeist").setup({
-  socket = vim.fn.expand("~/.cache/shellgeist.sock"),  -- Default socket path
-})
-```
-
-## Guardrails
-
-ShellGeist includes multiple safety mechanisms:
-
-- **Control Character Blocking**: Prevents injection of control characters
-- **Future Import Protection**: Ensures Python `__future__` imports remain at the top
-- **Rewrite Detection**: Blocks violent rewrites (>80% change) unless explicitly requested
-- **README Protection**: Stricter rules for README.md files (90% similarity required)
-- **Syntax Validation**: Validates Python syntax after edits
-- **Path Safety**: Prevents path traversal attacks
-
-## Protocol
-
-The daemon communicates via JSON-RPC over Unix sockets. Supported commands:
-
-- `ping` - Health check
-- `git_status` - Get git repository status
-- `git_add` - Stage a file
-- `git_restore` - Restore a file
-- `edit` - Generate edit plan (diff)
-- `edit_apply` - Apply a patch
-- `edit_apply_full` - Apply full file replacement
-- `plan` - Generate a plan (placeholder)
-- `shell` - Plan shell commands (placeholder)
-
-## Development
-
-### Project Structure
-
-```
-shellgeist/
-├── backend/
-│   └── shellgeist/
-│       ├── tools/        # Core modules (coder, planner, reviewer, shell)
-│       ├── diff/         # Patch application and guards
-│       ├── protocol.py   # RPC handler
-│       ├── models.py     # LLM client
-│       └── sgd.py        # Daemon entry point
-├── cli/
-│   └── sg.py             # CLI tool
-├── nvim/                 # Neovim plugin
-└── tests/                # Test suite
-```
-
-### Running Tests
-
-```bash
-pytest backend/tests/
-```
-
-### Building
-
-```bash
-pip install -e .
-```
-
-## License
-
-See [LICENSE](./LICENSE) file for details.
-
-## Contributing
-
-Contributions are welcome! Please ensure your code follows the project's style and includes appropriate tests.
+---
+*Built for developers who want a local, free, and powerful AI teammate.*

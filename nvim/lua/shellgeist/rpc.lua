@@ -1,5 +1,14 @@
 local M = {}
 
+local function safe_cb(cb, ev)
+  local ok, err = pcall(cb, ev)
+  if not ok then
+    vim.schedule(function()
+      vim.notify("ShellGeist RPC callback error: " .. tostring(err), vim.log.levels.ERROR, { title = "ShellGeist" })
+    end)
+  end
+end
+
 local function decode_json(line)
   local ok, obj = pcall(vim.json.decode, line, { luanil = { object = true, array = true } })
   if ok and type(obj) == "table" then
@@ -8,7 +17,8 @@ local function decode_json(line)
   return nil, "bad_json"
 end
 
-function M.request(sock_path, payload, cb)
+function M.request(sock_path, payload, cb, opts)
+  opts = opts or {}
   cb = cb or function(_) end
 
   local pipe = vim.loop.new_pipe(false)
@@ -28,13 +38,11 @@ function M.request(sock_path, payload, cb)
     end
     done = true
 
-    -- libuv cleanup is OK here
     pcall(pipe.read_stop, pipe)
     pcall(pipe.close, pipe)
 
-    -- CRITICAL: nvim API must run on main loop
     vim.schedule(function()
-      cb(ev)
+      safe_cb(cb, ev)
     end)
   end
 
@@ -59,29 +67,38 @@ function M.request(sock_path, payload, cb)
         end
 
         if not chunk then
-          -- EOF before newline
+          -- EOF
           if buf ~= "" then
             local obj, derr = decode_json(buf)
             if obj then
-              finish(obj)
-            else
-              finish({ type = "result", ok = false, error = derr or "bad_json" })
+              vim.schedule(function() safe_cb(cb, obj) end)
             end
-          else
-            finish({ type = "result", ok = false, error = "eof" })
           end
+          finish({ type = "result", ok = true, status = "eof" })
           return
         end
 
         buf = buf .. chunk
-        local nl = buf:find("\n", 1, true)
-        if nl then
+        while true do
+          local nl = buf:find("\n", 1, true)
+          if not nl then break end
+          
           local one = buf:sub(1, nl - 1)
+          buf = buf:sub(nl + 1)
+          
           local obj, derr = decode_json(one)
           if obj then
-            finish(obj)
+            vim.schedule(function() safe_cb(cb, obj) end)
+            if not opts.stream then
+              finish(obj)
+              return
+            end
           else
-            finish({ type = "result", ok = false, error = derr or "bad_json" })
+            -- if not streaming, we should probably fail?
+            if not opts.stream then
+              finish({ type = "result", ok = false, error = derr or "bad_json" })
+              return
+            end
           end
         end
       end)

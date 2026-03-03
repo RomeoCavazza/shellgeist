@@ -1,3 +1,4 @@
+"""Unified diff parser and applicator."""
 from __future__ import annotations
 
 import re

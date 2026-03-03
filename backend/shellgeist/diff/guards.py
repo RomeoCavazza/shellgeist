@@ -1,3 +1,4 @@
+"""Pre- and post-patch safety guards for diff application."""
 from __future__ import annotations
 
 import difflib

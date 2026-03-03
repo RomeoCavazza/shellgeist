@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""ShellGeist CLI - Command-line interface for debugging and testing."""
+"""ShellGeist CLI: unified command-line interface.
+
+Entry point for the ``shellgeist`` console script defined in pyproject.toml.
+Subcommands: agent, daemon, debug, edit-plan, ping, version.
+"""
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
 from pathlib import Path
 from typing import Any
+
+SOCKET_PATH = os.path.expanduser("~/.cache/shellgeist.sock")
 
 
 def _jprint(obj: Any) -> None:
@@ -15,9 +22,106 @@ def _jprint(obj: Any) -> None:
     print(json.dumps(obj, ensure_ascii=False, indent=2))
 
 
+# ── agent chat ──────────────────────────────────────────────────────────
+
+
+async def _run_agent_chat(goal: str) -> int:
+    """Connect to daemon and stream execution events to terminal."""
+    if not os.path.exists(SOCKET_PATH):
+        print("[!] Daemon not running. Start with: shellgeist daemon")
+        return 1
+
+    reader, writer = await asyncio.open_unix_connection(SOCKET_PATH)
+    payload = {"cmd": "agent_task", "goal": goal, "root": os.getcwd()}
+    writer.write((json.dumps(payload) + "\n").encode())
+    await writer.drain()
+
+    prefer_v5 = False
+
+    def _print_event(event: dict[str, Any]) -> None:
+        channel = str(event.get("channel", ""))
+        content = str(event.get("content", ""))
+        phase = str(event.get("phase", ""))
+        meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+
+        if channel == "status":
+            return
+        if channel == "reasoning":
+            print(f"\033[90mThinking: {content}\033[0m")
+            return
+        if channel == "tool_call":
+            print(f"\033[32mAction: {content}\033[0m")
+            return
+        if channel == "tool_result":
+            print(f"Observation: {content}")
+            return
+        if channel == "error":
+            print(f"\033[31mError: {content}\033[0m")
+            return
+        if channel == "response":
+            if isinstance(meta, dict) and meta.get("chunk"):
+                print(content, end="", flush=True)
+            else:
+                print(content)
+            if phase == "done":
+                print("")
+
+    try:
+        while True:
+            line = await reader.readline()
+            if not line:
+                break
+            ev = json.loads(line)
+            if ev["type"] == "execution_event":
+                prefer_v5 = True
+                event = ev.get("event")
+                if isinstance(event, dict):
+                    _print_event(event)
+                continue
+            if prefer_v5 and ev["type"] in {"log", "status"}:
+                continue
+            if ev["type"] == "log":
+                log_type = ev.get("log_type", "info")
+                content = ev["content"]
+                if log_type == "thought":
+                    print(f"\033[90mThinking: {content}\033[0m")
+                elif log_type == "action":
+                    print(f"\033[32mAction: {content}\033[0m")
+                elif log_type == "observation":
+                    print(f"Observation: {content}")
+                else:
+                    print(content)
+            elif ev["type"] == "result":
+                if ev["ok"]:
+                    print("\033[36mGoal achieved!\033[0m")
+                else:
+                    print(f"\033[31mError: {ev.get('error')}\033[0m")
+                break
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+    return 0
+
+
+# ── subcommands ─────────────────────────────────────────────────────────
+
+
+def cmd_agent(args: argparse.Namespace) -> int:
+    """Run a task via the agent daemon."""
+    return asyncio.run(_run_agent_chat(args.goal))
+
+
+def cmd_daemon(args: argparse.Namespace) -> int:
+    """Start the background daemon."""
+    from shellgeist.sgd import main as daemon_main
+
+    return asyncio.run(daemon_main())
+
+
 def cmd_debug(args: argparse.Namespace) -> int:
     """Print environment/debug info."""
-    from shellgeist.models import get_client
+    from shellgeist.llm.client import get_client
 
     try:
         client_fast, model_fast = get_client("fast")
@@ -32,6 +136,7 @@ def cmd_debug(args: argparse.Namespace) -> int:
         "python": sys.executable,
         "version": sys.version,
         "cwd": str(Path.cwd()),
+        "SOCKET_PATH": SOCKET_PATH,
         "OPENAI_BASE_URL": os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:11434/v1"),
         "OPENAI_API_KEY_set": bool(os.getenv("OPENAI_API_KEY")),
         "SHELLGEIST_MODEL_FAST": model_fast,
@@ -75,10 +180,15 @@ def cmd_ping(args: argparse.Namespace) -> int:
         return 1
 
 
-def cmd_version(args: argparse.Namespace) -> int:
+def cmd_version(_args: argparse.Namespace) -> int:
     """Print version."""
-    print("shellgeist 0.1.0")
+    from shellgeist import __version__
+
+    print(f"shellgeist {__version__}")
     return 0
+
+
+# ── parser & entry point ───────────────────────────────────────────────
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -90,6 +200,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", "-V", action="store_true", help="Print version")
 
     sub = p.add_subparsers(dest="cmd")
+
+    # agent
+    sp = sub.add_parser("agent", help="Run a task via the agent")
+    sp.add_argument("goal", help="Task goal")
+    sp.set_defaults(fn=cmd_agent)
+
+    # daemon
+    sp = sub.add_parser("daemon", help="Start the background daemon")
+    sp.set_defaults(fn=cmd_daemon)
 
     # debug
     sp = sub.add_parser("debug", help="Print environment/debug info (JSON)")
@@ -115,6 +234,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("version", help="Print version")
     sp.set_defaults(fn=cmd_version)
 
+    # Legacy: `shellgeist <goal>` without subcommand
+    p.add_argument("legacy_goal", nargs="?", help=argparse.SUPPRESS)
+    p.add_argument("--daemon", action="store_true", help=argparse.SUPPRESS)
+
     return p
 
 
@@ -127,6 +250,11 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_version(args)
 
     if not args.cmd:
+        # Legacy fallback: `shellgeist --daemon` or `shellgeist "do something"`
+        if getattr(args, "daemon", False):
+            return cmd_daemon(args)
+        if getattr(args, "legacy_goal", None):
+            return asyncio.run(_run_agent_chat(args.legacy_goal))
         parser.print_help()
         return 0
 

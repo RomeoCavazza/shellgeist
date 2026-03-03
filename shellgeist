@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# ShellGeist Wrapper Script
+# Automatically handles Nix environment if necessary
+
+# Handle symlinks: resolve the real directory of the script
+get_script_dir() {
+     local SOURCE="${BASH_SOURCE[0]}"
+     while [ -h "$SOURCE" ]; do
+          local S_DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+          SOURCE="$(readlink "$SOURCE")"
+          [[ $SOURCE != /* ]] && SOURCE="$S_DIR/$SOURCE"
+     done
+     echo "$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+}
+DIR="$(get_script_dir)"
+
+# 1. Already in a working env (nix develop, venv, system packages)?
+if command -v python3 >/dev/null 2>&1 && python3 -c "import pydantic, anyio" >/dev/null 2>&1; then
+    exec env PYTHONPATH="$DIR/backend" python3 -m shellgeist.cli "$@"
+fi
+
+# 2. Flake available? Use `nix develop`
+if [ -f "$DIR/flake.nix" ] && command -v nix >/dev/null 2>&1; then
+    exec nix develop "$DIR" --command bash -c \
+        "python3 -m shellgeist.cli $(printf ' %q' "$@")"
+fi
+
+# 3. Legacy fallback: ad-hoc nix-shell
+if command -v nix-shell >/dev/null 2>&1; then
+    CMD="export PYTHONPATH=$DIR/backend; python3 -m shellgeist.cli"
+    for arg in "$@"; do
+        CMD="$CMD \"$arg\""
+    done
+    exec nix-shell -p "python3.withPackages (p: with p; [ pydantic anyio ])" --run "$CMD"
+fi
+
+echo "Error: python3 with pydantic+anyio not found, and nix is unavailable." >&2
+exit 1

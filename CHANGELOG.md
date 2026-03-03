@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Initial public release preparation
+- Persistent PTY shell tools: `start_shell_session`, `write_shell_session`, `read_shell_session`, `exec_shell_session`, `close_shell_session`, `list_shell_sessions`
+- Agent guidance for choosing stateless `run_shell` vs stateful shell sessions (fixes nix-shell persistence workflows)
 
 ## [0.1.0] - 2026-02-01
 
@@ -41,4 +43,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [Unreleased]: https://github.com/RomeoCavazza/shellgeist/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/RomeoCavazza/shellgeist/releases/tag/v0.1.0
 [0.0.1]: https://github.com/RomeoCavazza/shellgeist/releases/tag/v0.0.1
-

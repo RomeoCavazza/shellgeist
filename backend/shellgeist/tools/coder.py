@@ -1,3 +1,4 @@
+"""Code editing tools: edit_apply, write_file, edit_plan via LLM."""
 from __future__ import annotations
 
 import difflib
@@ -11,8 +12,14 @@ from typing import Any
 
 from shellgeist.diff.apply import PatchApplyError, apply_unified_diff
 from shellgeist.diff.guards import enforce_guards
-from shellgeist.models import get_client
+from shellgeist.llm.client import get_client
 from shellgeist.util_json import loads_obj
+from shellgeist.tools.base import registry
+from pydantic import BaseModel
+
+class EditFileInput(BaseModel):
+    path: str
+    instruction: str
 
 # =============================================================================
 # TRACE
@@ -596,7 +603,7 @@ def _git(root: Path, args: list[str]) -> tuple[int, str]:
 # FINALIZER
 # =============================================================================
 
-def _finalize_ok(path: str, instruction: str, old: str, new: str, patch: str) -> dict:
+def _finalize_ok(path: str, instruction: str, old: str, new: str, patch: str, root: Path) -> dict:
     new2 = _autofix_future_import(old, new)
 
     if not _py_syntax_ok(path, new2):
@@ -616,6 +623,10 @@ def _finalize_ok(path: str, instruction: str, old: str, new: str, patch: str) ->
         _trace(f"guard_blocked(finalize): {why}")
         return {"ok": False, "error": "guard_blocked", "detail": why, "patch": patch}
 
+    # ACTUALLY WRITE THE FILE (MVP Empowerment)
+    file_path = _resolve_repo_path(root, path)
+    _atomic_write_text(file_path, new2)
+
     # If we changed the content (new -> new2), patch must match new2.
     if new2 != new:
         patch2 = _make_patch_from_fulltext(path, old, new2)
@@ -624,6 +635,7 @@ def _finalize_ok(path: str, instruction: str, old: str, new: str, patch: str) ->
             "file": path,
             "patch": patch2,
             "diff": _ensure_display_diff(path, patch2),
+            "written": True,
         }
 
     return {
@@ -631,6 +643,7 @@ def _finalize_ok(path: str, instruction: str, old: str, new: str, patch: str) ->
         "file": path,
         "patch": patch,
         "diff": _ensure_display_diff(path, patch),
+        "written": True,
     }
 
 
@@ -645,6 +658,7 @@ def _fulltext_fallback(
     *,
     reason: str,
     cache: dict[str, _ModelCtx],
+    root: Path,
 ) -> dict:
     system, user = _build_fulltext_prompts(path, instruction, old, repair=reason)
     raw, _ = _call_model(model_type="smart", system=system, user=user, cache=cache)
@@ -694,20 +708,40 @@ def _fulltext_fallback(
         )
         return {"ok": False, "error": "guard_blocked", "detail": why_future, "patch": patch}
 
-    return _finalize_ok(path, instruction, old, new, patch)
+    return _finalize_ok(path, instruction, old, new, patch, root)
 
 
 # =============================================================================
 # MAIN EDIT PLAN
 # =============================================================================
 
+@registry.register(
+    description="Plan and apply edits to a file using natural language instructions.",
+    input_model=EditFileInput
+)
+def edit_file(
+    path: str | None = None,
+    instruction: str = "",
+    root: str = "",
+    file_path: str | None = None,
+) -> dict:
+    """
+    Agent-facing tool for editing files.
+    Wraps edit_plan to handle the root Path conversion.
+    """
+    target = (path or file_path or "").strip()
+    return edit_plan(target, instruction, root=Path(root))
+
+
 def edit_plan(path: str, instruction: str, *, root: Path) -> dict:
     file_path = _resolve_repo_path(root, path)
     if not file_path.exists():
-        return {"ok": False, "error": "file_not_found", "file": path}
+        # Support creating new files
+        old = ""
+    else:
+        old = file_path.read_text(encoding="utf-8", errors="replace")
 
     cache: dict[str, _ModelCtx] = {}
-    old = file_path.read_text(encoding="utf-8", errors="replace")
 
     system1, user1 = _build_prompts(path, instruction, old)
     raw1, _ = _call_model(model_type="smart", system=system1, user=user1, cache=cache)
@@ -728,17 +762,17 @@ def edit_plan(path: str, instruction: str, *, root: Path) -> dict:
             diff1 = salvage
 
     if "@@" not in diff1:
-        return _fulltext_fallback(path, instruction, old, reason="missing_diff", cache=cache)
+        return _fulltext_fallback(path, instruction, old, reason="missing_diff", cache=cache, root=root)
 
     if old == "":
         ok_empty, why_empty = _validate_diff_for_empty_old(diff1)
         if not ok_empty:
-            return _fulltext_fallback(path, instruction, old, reason=f"bad_diff_empty_old: {why_empty}", cache=cache)
+            return _fulltext_fallback(path, instruction, old, reason=f"bad_diff_empty_old: {why_empty}", cache=cache, root=root)
 
     apply_err1 = ""
     try:
         new1 = apply_unified_diff(old, diff1)
-        out1 = _finalize_ok(path, instruction, old, new1, diff1)
+        out1 = _finalize_ok(path, instruction, old, new1, diff1, root)
         if out1.get("ok") is True:
             return out1
 
@@ -756,7 +790,7 @@ def edit_plan(path: str, instruction: str, *, root: Path) -> dict:
         if "@@" in diffg:
             try:
                 newg = apply_unified_diff(old, diffg)
-                outg = _finalize_ok(path, instruction, old, newg, diffg)
+                outg = _finalize_ok(path, instruction, old, newg, diffg, root)
                 if outg.get("ok") is True:
                     return outg
             except PatchApplyError as eg2:
@@ -793,11 +827,11 @@ def edit_plan(path: str, instruction: str, *, root: Path) -> dict:
         if old == "":
             ok_empty2, why_empty2 = _validate_diff_for_empty_old(diff2)
             if not ok_empty2:
-                return _fulltext_fallback(path, instruction, old, reason=f"bad_diff_empty_old: {why_empty2}", cache=cache)
+                return _fulltext_fallback(path, instruction, old, reason=f"bad_diff_empty_old: {why_empty2}", cache=cache, root=root)
 
         try:
             new2 = apply_unified_diff(old, diff2)
-            out2 = _finalize_ok(path, instruction, old, new2, diff2)
+            out2 = _finalize_ok(path, instruction, old, new2, diff2, root)
             if out2.get("ok") is True:
                 return out2
 
@@ -815,7 +849,7 @@ def edit_plan(path: str, instruction: str, *, root: Path) -> dict:
             if "@@" in diffg2:
                 try:
                     newg2 = apply_unified_diff(old, diffg2)
-                    outg2 = _finalize_ok(path, instruction, old, newg2, diffg2)
+                    outg2 = _finalize_ok(path, instruction, old, newg2, diffg2, root)
                     if outg2.get("ok") is True:
                         return outg2
                 except PatchApplyError as eg4:
@@ -829,7 +863,7 @@ def edit_plan(path: str, instruction: str, *, root: Path) -> dict:
         except PatchApplyError as e2a:
             _trace(f"patch_apply_failed(2): {e2a}")
 
-    return _fulltext_fallback(path, instruction, old, reason="patch_apply_failed twice", cache=cache)
+    return _fulltext_fallback(path, instruction, old, reason="patch_apply_failed twice", cache=cache, root=root)
 
 
 # =============================================================================
