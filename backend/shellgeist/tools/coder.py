@@ -10,12 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
+
 from shellgeist.diff.apply import PatchApplyError, apply_unified_diff
 from shellgeist.diff.guards import enforce_guards
 from shellgeist.llm.client import get_client
-from shellgeist.util_json import loads_obj
 from shellgeist.tools.base import registry
-from pydantic import BaseModel
+from shellgeist.util_json import loads_obj
+
 
 class EditFileInput(BaseModel):
     path: str

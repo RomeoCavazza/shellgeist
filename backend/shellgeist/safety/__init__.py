@@ -2,7 +2,7 @@
 
 from shellgeist.safety.blocked import is_blocked
 from shellgeist.safety.loop_guard import LoopGuard, LoopGuardConfig
-from shellgeist.safety.retry import RetryEngine, RetryConfig
+from shellgeist.safety.retry import RetryConfig, RetryEngine
 from shellgeist.safety.verify import VerifyRuntime
 
 __all__ = [

@@ -5,7 +5,6 @@ import json
 import re
 from typing import Any
 
-
 SHELL_SESSION_TOOLS = {
     "exec_shell_session",
     "read_shell_session",

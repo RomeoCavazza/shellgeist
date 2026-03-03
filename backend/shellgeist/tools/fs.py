@@ -93,7 +93,7 @@ def list_files(directory: str, root: str) -> list[str]:
     p = _resolve_repo_path(root, directory)
     if not p.exists() or not p.is_dir():
         raise FileNotFoundError(f"Directory not found: {directory}")
-    
+
     items = []
     for entry in os.scandir(p):
         if entry.name.startswith("."):

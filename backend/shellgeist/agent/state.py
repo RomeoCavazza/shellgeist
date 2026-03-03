@@ -23,7 +23,7 @@ class AgentRunState:
     phase: str = AgentPhase.PLAN
 
     @staticmethod
-    def from_goal(goal: str) -> "AgentRunState":
+    def from_goal(goal: str) -> AgentRunState:
         goal_lc = str(goal or "").lower()
         task_terminal_only = (
             "terminal" in goal_lc

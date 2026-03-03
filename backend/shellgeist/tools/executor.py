@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from shellgeist.safety.retry import classify_result_payload
 from shellgeist.tools.runtime import (

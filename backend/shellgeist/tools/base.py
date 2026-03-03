@@ -1,9 +1,9 @@
 """Tool registry: schema-driven tool definition and lookup."""
 from __future__ import annotations
 
-import inspect
-from dataclasses import dataclass, field
-from typing import Any, Callable, Type
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -11,7 +11,7 @@ class Tool:
     name: str
     description: str
     func: Callable[..., Any]
-    input_model: Type[Any] | None = None
+    input_model: type[Any] | None = None
 
     def execute(self, **kwargs: Any) -> Any:
         return self.func(**kwargs)
@@ -21,7 +21,7 @@ class ToolRegistry:
     def __init__(self) -> None:
         self.tools: dict[str, Tool] = {}
 
-    def register(self, description: str, input_model: Type[Any] | None = None) -> Callable[..., Any]:
+    def register(self, description: str, input_model: type[Any] | None = None) -> Callable[..., Any]:
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             name = func.__name__
             self.tools[name] = Tool(
@@ -40,7 +40,7 @@ class ToolRegistry:
             schema = {}
             if tool.input_model is not None and tool.input_model is not BaseModel:
                 schema = tool.input_model.model_json_schema()
-            
+
             schemas.append({
                 "name": tool.name,
                 "description": tool.description,

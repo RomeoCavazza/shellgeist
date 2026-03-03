@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import re
 
-
 PROTOCOL_MARKDOWN_WITHOUT_TOOL = "ERROR: You provided code in markdown but NO <tool_use> tags. Use <tool_use> to execute."
 
 

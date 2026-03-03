@@ -1,10 +1,9 @@
 """SQLite-backed session store: message persistence and retrieval."""
 from __future__ import annotations
 
-import sqlite3
-import os
 import json
-from datetime import datetime
+import os
+import sqlite3
 
 DB_PATH = os.path.expanduser("~/.cache/shellgeist/history.db")
 
@@ -52,7 +51,7 @@ def get_session_history(session_id, for_ui=False):
         )
     rows = cur.fetchall()
     conn.close()
-    
+
     history = []
     for row in rows:
         role = row[0]
@@ -65,7 +64,7 @@ def get_session_history(session_id, for_ui=False):
                 continue
             history.append({"role": log_type or "thought", "content": content})
             continue
-            
+
         if role == "user" and for_ui and (log_type == "context" or content.strip().startswith("<tool_observation")):
             continue
 
@@ -81,8 +80,8 @@ def get_session_history(session_id, for_ui=False):
                     continue # Hide structured tool call messages from UI
                 except Exception:
                     history.append({"role": "assistant", "content": content})
-                continue 
-            
+                continue
+
             try:
                 history.append(json.loads(content))
             except Exception:

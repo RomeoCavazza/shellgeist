@@ -19,8 +19,14 @@ from shellgeist.agent.orchestrator import (
     decide_no_tool_action,
 )
 from shellgeist.agent.state import AgentRunState
-from shellgeist.io import UIEventEmitter, TelemetryEmitter, completed_result, failed_result, stopped_result
-from shellgeist.llm import get_client, build_system_prompt, run_llm_stream_with_retry
+from shellgeist.io import (
+    TelemetryEmitter,
+    UIEventEmitter,
+    completed_result,
+    failed_result,
+    stopped_result,
+)
+from shellgeist.llm import build_system_prompt, get_client, run_llm_stream_with_retry
 from shellgeist.protocol.helpers import (
     PROTOCOL_MARKDOWN_WITHOUT_TOOL,
     extract_actionable_thought,
@@ -28,7 +34,7 @@ from shellgeist.protocol.helpers import (
     has_markdown_without_tool_calls,
     is_small_talk,
 )
-from shellgeist.safety import LoopGuard, LoopGuardConfig, RetryEngine, RetryConfig, VerifyRuntime
+from shellgeist.safety import LoopGuard, LoopGuardConfig, RetryConfig, RetryEngine, VerifyRuntime
 from shellgeist.session import repair_conversation_history
 from shellgeist.session.ops import (
     append_context_observation,
@@ -163,7 +169,7 @@ class Agent:
             if content:
                 self.history.append({"role": "assistant", "content": content})
                 logs.append(content)
-                
+
                 if content.startswith("ERROR:"):
                      _debug_log(f"Fatal error from provider: {content}")
                      await _log(content, type="error")
@@ -176,7 +182,7 @@ class Agent:
             if thought_text and thought_text != last_thought_emitted:
                 last_thought_emitted = thought_text
                 await _log(thought_text, type="thought")
-            
+
             if has_markdown_without_tool_calls(content, has_tool_calls=bool(tool_calls)):
                 v_msg = PROTOCOL_MARKDOWN_WITHOUT_TOOL
                 _debug_log("Protocol Violation: Markdown without Tool")
@@ -215,8 +221,9 @@ class Agent:
                     break
                 func_name = tc.get("name")
                 args = tc.get("arguments", {})
-                
-                if not func_name: continue
+
+                if not func_name:
+                    continue
                 args = normalize_tool_args(
                     func_name,
                     tc,

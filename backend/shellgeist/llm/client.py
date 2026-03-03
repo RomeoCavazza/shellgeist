@@ -1,10 +1,15 @@
 """LLM client discovery: auto-detect Ollama, OpenAI-compatible, and cloud providers."""
 from __future__ import annotations
-from typing import Any, AsyncIterator
 
 import json
 import os
 import queue
+import threading
+import urllib.error
+import urllib.request
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from typing import Any
 
 from shellgeist.config import (
     http_timeout,
@@ -15,10 +20,6 @@ from shellgeist.config import (
     shellgeist_model,
     shellgeist_model_fallback_keywords,
 )
-import threading
-import urllib.error
-import urllib.request
-from dataclasses import dataclass
 
 
 def _debug_enabled() -> bool:
@@ -108,7 +109,7 @@ class _ChatCompletions:
                     _ToolCall(id=tc["id"], type=tc["type"], function=tc["function"])
                     for tc in msg_data["tool_calls"]
                 ]
-            
+
             msg = _Msg(
                 content=msg_data.get("content"),
                 role=msg_data.get("role", "assistant"),
@@ -161,14 +162,14 @@ def _stream_reader(
                 line_str = line.decode("utf-8", errors="replace").strip()
                 if not line_str:
                     continue
-                
+
                 # Handle SSE (Server-Sent Events) for /v1 compat
                 if line_str.startswith("data: "):
                     line_str = line_str[6:].strip()
-                
+
                 if line_str == "[DONE]":
                     break
-                    
+
                 try:
                     data = json.loads(line_str)
                 except json.JSONDecodeError:
@@ -226,7 +227,7 @@ async def create_stream(
         daemon=True,
     )
     thread.start()
-    
+
     _log("Stream thread started, waiting for first chunk...")
     idle_timeout_s = max(30, timeout_s)
     while True:
@@ -239,7 +240,7 @@ async def create_stream(
                 "The model might be too large for your RAM or loading slowly."
             )
             break
-            
+
         if item is None:
             _log("Stream finished normally")
             break
@@ -293,7 +294,7 @@ def get_client(kind: str = "smart") -> tuple[OpenAICompatClient, str]:
                     f"Please run 'ollama pull {preferred}' or another model first."
                 )
         except urllib.error.URLError:
-            # Server is down, let the normal error handler handle it later 
+            # Server is down, let the normal error handler handle it later
             # or return preferred and it will fail with "Connection Refused"
             return OpenAICompatClient(base_url=base_url, api_key=api_key), preferred
         except RuntimeError as e:

@@ -5,9 +5,9 @@ import asyncio
 import json
 import os
 import random
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
-
+from typing import Any
 
 RetryClass = str
 
@@ -22,7 +22,7 @@ class RetryConfig:
     jitter_ms: int = 120
 
     @staticmethod
-    def from_env() -> "RetryConfig":
+    def from_env() -> RetryConfig:
         def _env_int(name: str, default: int) -> int:
             raw = os.environ.get(name)
             if not raw:
@@ -100,13 +100,11 @@ class RetryEngine:
         retries = 0
         last_error_class: RetryClass | None = None
         last_reason = ""
-        last_result: Any | None = None
 
         while attempts < self.config.max_attempts:
             attempts += 1
             try:
                 result = await operation(attempts)
-                last_result = result
                 result_class: RetryClass | None = None
                 result_reason = ""
                 if classify_result is not None:

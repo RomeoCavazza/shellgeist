@@ -7,7 +7,6 @@ from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
-from shellgeist.agent import Agent
 from shellgeist.protocol.models import SGRequest, SGResult
 from shellgeist.safety.blocked import is_blocked
 from shellgeist.tools.coder import apply_edit, apply_full_replace, edit_plan
@@ -34,7 +33,7 @@ def _git(root: Path, args: list[str]) -> tuple[int, str]:
 
 
 # Global cache for agents to avoid re-scanning and re-summarizing on every request
-_agent_cache: dict[str, Agent] = {}
+_agent_cache: dict[str, Any] = {}
 
 async def handle_request(raw_req: dict, writer: Any | None = None) -> dict:
     try:
@@ -157,14 +156,16 @@ async def handle_request(raw_req: dict, writer: Any | None = None) -> dict:
             root = _resolve_root(req.root)
             if not req.goal:
                 raise ValueError("missing_goal")
-            
+
             session_id = req.session_id or "default"
             if session_id in _agent_cache:
                 agent = _agent_cache[session_id]
             else:
+                from shellgeist.agent import Agent
+
                 agent = Agent(root=str(root))
                 _agent_cache[session_id] = agent
-                
+
             res = await agent.run_task(req.goal, writer=writer, session_id=session_id)
             return SGResult(ok=res["ok"], data=res).model_dump()
 

@@ -1,7 +1,7 @@
 """Pydantic models for RPC request/response validation."""
 from __future__ import annotations
 
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -88,20 +88,20 @@ class HistoryRequest(SGBaseRequest):
     session_id: str = "default"
 
 # Union for all supported requests
-SGRequest = Union[
-    PingRequest,
-    GitStatusRequest,
-    GitAddRequest,
-    GitRestoreRequest,
-    PlanRequest,
-    EditRequest,
-    EditApplyRequest,
-    EditApplyFullRequest,
-    AgentTaskRequest,
-    ShellRequest,
-    ChatRequest,
-    HistoryRequest,
-]
+SGRequest = (
+    PingRequest
+    | GitStatusRequest
+    | GitAddRequest
+    | GitRestoreRequest
+    | PlanRequest
+    | EditRequest
+    | EditApplyRequest
+    | EditApplyFullRequest
+    | AgentTaskRequest
+    | ShellRequest
+    | ChatRequest
+    | HistoryRequest
+)
 
 
 class SGResult(BaseModel):
