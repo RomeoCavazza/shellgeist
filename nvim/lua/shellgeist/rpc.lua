@@ -71,6 +71,10 @@ function M.request(sock_path, payload, cb, opts)
           if buf ~= "" then
             local obj, derr = decode_json(buf)
             if obj then
+              if not opts.stream then
+                finish(obj)
+                return
+              end
               vim.schedule(function() safe_cb(cb, obj) end)
             end
           end

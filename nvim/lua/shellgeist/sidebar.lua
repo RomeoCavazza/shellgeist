@@ -64,31 +64,31 @@ local function define_highlights()
   local hl = vim.api.nvim_set_hl
   -- Chrome
   hl(0, "SGBorder",       { fg = "#3b82f6" })
-  hl(0, "SGTitle",        { fg = "#1e222a", bg = "#98c379", bold = true })
+  hl(0, "SGTitle",        { fg = "#e2e8f0", bg = "#1e40af", bold = true })
   -- User / response
-  hl(0, "SGUser",         { fg = "#e5c07b", bold = true })
-  hl(0, "SGUserBody",     { fg = "#dcdfe4" })
-  hl(0, "SGResponse",     { fg = "#61afef", bold = true })
-  hl(0, "SGResponseBody", { fg = "#dcdfe4" })
+  hl(0, "SGUser",         { fg = "#93c5fd", bold = true })
+  hl(0, "SGUserBody",     { fg = "#e2e8f0" })
+  hl(0, "SGResponse",     { fg = "#60a5fa", bold = true })
+  hl(0, "SGResponseBody", { fg = "#e2e8f0" })
   -- Thinking
-  hl(0, "SGThinking",     { fg = "#9ca3af", italic = true })
-  -- Tool cards (avante-style state badges)
-  hl(0, "SGCardBorder",   { fg = "#5c6370" })
-  hl(0, "SGCardAction",   { fg = "#1e222a", bg = "#56b6c2", bold = true })
-  hl(0, "SGCardCode",     { fg = "#1e222a", bg = "#c678dd", bold = true })
-  hl(0, "SGCardResult",   { fg = "#1e222a", bg = "#98c379", bold = true })
-  hl(0, "SGCardError",    { fg = "#1e222a", bg = "#e06c75", bold = true })
-  hl(0, "SGCardBody",     { fg = "#abb2bf" })
-  -- Diff inline (green/red)
-  hl(0, "SGDiffAdd",      { fg = "#98c379", bg = "#2d3b2d" })
-  hl(0, "SGDiffDel",      { fg = "#e06c75", bg = "#3b2d2d" })
-  hl(0, "SGDiffHdr",      { fg = "#61afef" })
+  hl(0, "SGThinking",     { fg = "#94a3b8", italic = true })
+  -- Tool cards
+  hl(0, "SGCardBorder",   { fg = "#475569" })
+  hl(0, "SGCardAction",   { fg = "#e2e8f0", bg = "#1e40af", bold = true })
+  hl(0, "SGCardCode",     { fg = "#e2e8f0", bg = "#4338ca", bold = true })
+  hl(0, "SGCardResult",   { fg = "#e2e8f0", bg = "#0369a1", bold = true })
+  hl(0, "SGCardError",    { fg = "#e2e8f0", bg = "#b91c1c", bold = true })
+  hl(0, "SGCardBody",     { fg = "#cbd5e1" })
+  -- Diff inline (green/red — standard)
+  hl(0, "SGDiffAdd",      { fg = "#4ade80", bg = "#1a2e1a" })
+  hl(0, "SGDiffDel",      { fg = "#f87171", bg = "#2e1a1a" })
+  hl(0, "SGDiffHdr",      { fg = "#60a5fa" })
   -- Error
-  hl(0, "SGError",        { fg = "#e06c75", bold = true })
+  hl(0, "SGError",        { fg = "#ef4444", bold = true })
   -- Spinner
-  hl(0, "SGSpinner",      { fg = "#10b981", bold = true })
+  hl(0, "SGSpinner",      { fg = "#3b82f6", bold = true })
   -- Body default
-  hl(0, "SGBody",         { fg = "#dcdfe4" })
+  hl(0, "SGBody",         { fg = "#e2e8f0" })
 end
 
 -- ── buffer helpers ─────────────────────────────────────────────────────
@@ -116,13 +116,19 @@ local function hl_partial(line_idx, col_start, col_end, group)
   pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, group, line_idx, col_start, col_end)
 end
 
---- Scroll chat window to the bottom.
+--- Scroll chat window to the bottom (debounced for streaming perf).
+local _scroll_pending = false
 local function scroll_bottom()
-  if not M.chat or not buf_valid(M.chat.bufnr) then return end
-  local w = M.chat.winid
-  if not win_valid(w) then return end
-  local ok, n = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
-  if ok then pcall(vim.api.nvim_win_set_cursor, w, { n, 0 }) end
+  if _scroll_pending then return end
+  _scroll_pending = true
+  vim.defer_fn(function()
+    _scroll_pending = false
+    if not M.chat or not buf_valid(M.chat.bufnr) then return end
+    local w = M.chat.winid
+    if not win_valid(w) then return end
+    local ok, n = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
+    if ok then pcall(vim.api.nvim_win_set_cursor, w, { n, 0 }) end
+  end, 30)
 end
 
 -- ── card builder (avante-style box-drawing) ────────────────────────────
@@ -166,21 +172,23 @@ end
 -- ── rendering functions ────────────────────────────────────────────────
 
 local function render_user(text)
-  local line = " " .. compact(text, 200)
-  local start = buf_append({ line, "" })
+  local header = "󰀄 User"
+  local body = compact(text, 200)
+  local start = buf_append({ header, body, "" })
   if start then
-    hl_partial(start, 0, 2, "SGUser")
-    hl_partial(start, 2, -1, "SGUserBody")
+    hl_range(start, 1, "SGUser")
+    hl_range(start + 1, 1, "SGUserBody")
   end
   scroll_bottom()
 end
 
 local function render_response(text)
-  local line = "󰭻 " .. compact(text, 300)
-  local start = buf_append({ line, "" })
+  local header = " ShellGeist"
+  local body = compact(text, 300)
+  local start = buf_append({ header, body, "" })
   if start then
-    hl_partial(start, 0, 4, "SGResponse")
-    hl_partial(start, 4, -1, "SGResponseBody")
+    hl_range(start, 1, "SGResponse")
+    hl_range(start + 1, 1, "SGResponseBody")
   end
   scroll_bottom()
 end
@@ -484,35 +492,25 @@ function M.append_text(text, msg_type, meta)
   if msg_type == "assistant_chunk" or msg_type == "response_chunk" then
     local chunk = text
     if chunk == "" then return end
+    local is_first = not M._streaming_assistant
+    if is_first then
+      M._streaming_assistant = true
+      local hdr = buf_append({ " ShellGeist" })
+      if hdr then hl_range(hdr, 1, "SGResponse") end
+      buf_append({ "" })  -- content starts on new line
+    end
     local ok_count, line_count = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
     if not ok_count then return end
-    local is_first = not M._streaming_assistant
-    if is_first then M._streaming_assistant = true end
-
-    if line_count == 0 or is_first then
-      local first_nl = chunk:find("\n", 1, true)
-      local first_line = first_nl and chunk:sub(1, first_nl - 1) or chunk
-      local rest = first_nl and chunk:sub(first_nl + 1) or ""
-      local start = buf_append({ "󰭻 " .. first_line })
-      if start then
-        hl_partial(start, 0, 4, "SGResponse")
-        hl_partial(start, 4, -1, "SGResponseBody")
-      end
-      if rest ~= "" then
-        buf_append(vim.split(rest, "\n", { plain = true }))
-      end
+    local last_idx = line_count - 1
+    local ok_last, last_lines = pcall(vim.api.nvim_buf_get_lines, M.chat.bufnr, last_idx, last_idx + 1, false)
+    if not ok_last then return end
+    local last_line = (last_lines and last_lines[1]) or ""
+    local nl = chunk:find("\n", 1, true)
+    if nl then
+      pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_idx, last_idx + 1, false, { last_line .. chunk:sub(1, nl - 1) })
+      buf_append(vim.split(chunk:sub(nl + 1), "\n", { plain = true }))
     else
-      local last_idx = line_count - 1
-      local ok_last, last_lines = pcall(vim.api.nvim_buf_get_lines, M.chat.bufnr, last_idx, last_idx + 1, false)
-      if not ok_last then return end
-      local last_line = (last_lines and last_lines[1]) or ""
-      local nl = chunk:find("\n", 1, true)
-      if nl then
-        pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_idx, last_idx + 1, false, { last_line .. chunk:sub(1, nl - 1) })
-        buf_append(vim.split(chunk:sub(nl + 1), "\n", { plain = true }))
-      else
-        pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_idx, last_idx + 1, false, { last_line .. chunk })
-      end
+      pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_idx, last_idx + 1, false, { last_line .. chunk })
     end
     scroll_bottom()
     return
