@@ -82,17 +82,16 @@ def _repair_common_llm_json(s: str) -> str:
 
 
 def _unescape_if_looks_escaped(s: str) -> str:
-    """
-    If we see literal backslash escapes like '\\n' or '\\"', unescape once.
+    """Unescape literal backslash-n/t/r sequences from LLM output.
+
+    Uses simple string replacement instead of ``unicode_escape`` which
+    corrupts non-ASCII characters (e.g. ``é`` → ``Ã©``).
     """
     if not isinstance(s, str):
         return s
-    if "\\n" in s or "\\t" in s or '\\"' in s or "\\r" in s:
-        try:
-            return bytes(s, "utf-8").decode("unicode_escape")
-        except Exception:
-            return s
-    return s
+    if "\\n" not in s and "\\t" not in s and "\\r" not in s:
+        return s
+    return s.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "")
 
 
 def _postprocess_obj(d: dict) -> dict:

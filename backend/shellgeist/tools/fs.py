@@ -87,6 +87,10 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
     p = resolve_repo_path(Path(root), target)
     p.parent.mkdir(parents=True, exist_ok=True)
 
+    # Fix double-escaped newlines from LLMs (literal \n instead of real newlines)
+    if "\n" not in content and "\\n" in content:
+        content = content.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "")
+
     # Capture old content for diff
     old_text = ""
     existed = p.exists()

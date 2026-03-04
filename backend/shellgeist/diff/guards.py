@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import difflib
 import os
-from pathlib import Path
 
 _TRIPLE_DQ = '"' * 3
 _TRIPLE_SQ = "'" * 3
@@ -248,7 +247,6 @@ def enforce_guards(*, relpath: str, instruction: str, old: str, new: str) -> tup
     - Block control chars in new content
     - Enforce __future__ placement rules (when file had one)
     - Block violent rewrites unless explicitly requested
-    - Special-case: README.md rewrite blocked (stricter + specific message)
     """
     old = old or ""
     new = new or ""
@@ -269,15 +267,6 @@ def enforce_guards(*, relpath: str, instruction: str, old: str, new: str) -> tup
 
     # 2) similarity + README special-case
     ratio = _similarity_ratio(old, new)
-
-    p = Path(relpath)
-    is_readme = p.name.lower() == "readme.md"
-
-    # README is protected: if user didn't ask for rewrite/refactor, block large rewrites hard.
-    if is_readme and not _allow_big_rewrite(instruction):
-        # keep threshold high for README; tests expect a rewrite to be blocked
-        if ratio < 0.90:
-            return False, "guard: README rewrite blocked"
 
     # generic rewrite-violence guard
     min_ratio = 0.20
