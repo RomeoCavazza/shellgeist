@@ -156,8 +156,22 @@ def decide_no_tool_action(
     *,
     completion_blocker: str | None,
     extract_final_response: Callable[[str], str],
+    any_tool_succeeded: bool = True,
 ) -> NoToolDecision:
     if "Status: DONE" in content:
+        if not any_tool_succeeded:
+            # Allow pure conversational replies (no action needed)
+            stripped = content.strip()
+            is_question = stripped.rstrip().endswith("?")
+            if not is_question:
+                return NoToolDecision(
+                    action="continue",
+                    feedback=(
+                        "INVALID_COMPLETION: You said 'Status: DONE' but you have NOT called "
+                        "any tool yet. You MUST actually perform the action (call a tool) before "
+                        "declaring completion. Do NOT describe what you would do — DO IT."
+                    ),
+                )
         if completion_blocker:
             return NoToolDecision(action="continue", feedback=completion_blocker)
         return NoToolDecision(action="complete", final_response=extract_final_response(content))
@@ -172,6 +186,15 @@ def decide_no_tool_action(
 
     # Allow conversational / final answers without requiring 'Status: DONE'
     if _looks_like_final_response(content):
+        if not any_tool_succeeded:
+            return NoToolDecision(
+                action="continue",
+                feedback=(
+                    "INVALID_COMPLETION: You wrote a response but have NOT called any tool. "
+                    "You MUST call the appropriate tool to perform the action. "
+                    "Do NOT describe what you would do — DO IT with <tool_use>."
+                ),
+            )
         if completion_blocker:
             return NoToolDecision(action="continue", feedback=completion_blocker)
         return NoToolDecision(action="complete", final_response=extract_final_response(content))

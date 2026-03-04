@@ -11,10 +11,10 @@ from typing import Any
 @dataclass
 class LoopGuardConfig:
     warn_threshold: int = 2
-    block_threshold: int = 3
-    outcome_block_threshold: int = 3
+    block_threshold: int = 2
+    outcome_block_threshold: int = 2
     success_repeat_threshold: int = 2
-    global_call_limit: int = 60
+    global_call_limit: int = 40
     history_size: int = 16
 
 

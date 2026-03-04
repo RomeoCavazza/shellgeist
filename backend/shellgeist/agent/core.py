@@ -294,6 +294,7 @@ class Agent:
                     type="info",
                 )
 
+        any_tool_succeeded = False
         _debug_log(f"Entering loop for goal: {goal}")
         for i in range(max_steps):
             _debug_log(f"Step {i} start")
@@ -357,11 +358,16 @@ class Agent:
                     content,
                     completion_blocker=blocker,
                     extract_final_response=extract_canonical_response,
+                    any_tool_succeeded=any_tool_succeeded,
                 )
                 if decision.action == "complete" and decision.final_response:
                     run_state.phase = "done"
-                    save_assistant_message(session_id=session_id, content=decision.final_response)
-                    await _emit_execution_event("response", decision.final_response, phase="done", meta={"final": True})
+                    # Truncate excessively verbose responses (prevent wall of text)
+                    final_text = decision.final_response
+                    if len(final_text) > 800:
+                        final_text = final_text[:800].rsplit("\n", 1)[0] + "\n…"
+                    save_assistant_message(session_id=session_id, content=final_text)
+                    await _emit_execution_event("response", final_text, phase="done", meta={"final": True})
                     await _emit_execution_event("status", "", phase="done", meta={"thinking": False})
                     return completed_result(logs=logs, response=decision.final_response, retry=_retry_stats())
 
@@ -391,6 +397,8 @@ class Agent:
             )
             last_shell_session_id = tq_result["last_shell_session_id"]
             schema_error_count = tq_result["schema_error_count"]
+            if tq_result.get("observations"):
+                any_tool_succeeded = True
             done: dict[str, Any] | None = tq_result["done_result"]
             if done is not None:
                 return done
