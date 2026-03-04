@@ -34,6 +34,31 @@ _FILE_CREATION_RE = re.compile(
 )
 
 
+# Patterns that indicate the LLM is being lazy and not writing full content.
+# NOTE: plain "..." is NOT included — it appears in legitimate prose.
+_LAZY_PLACEHOLDER_PATTERNS = [
+    r"^\s*\.\.\.\s*$",                      # line that is ONLY "..."
+    r"\.\.\. *\(.*(?:rest|more|remain|suite|etc)",  # "... (rest of file)"
+    r"# *(TODO|FIXME|content here|code here|your .* here)",
+    r"// *(TODO|FIXME|content here|code here|your .* here)",
+    r"<code",                                  # HTML placeholder
+    r"précédemment donné",
+    r"existing code",
+    r"remain(s|ing)? unchanged",
+    r"same as (before|above)",
+    r"\.\.\. *existing",
+]
+_LAZY_RE = re.compile("|".join(_LAZY_PLACEHOLDER_PATTERNS), re.IGNORECASE | re.MULTILINE)
+
+
+def _has_lazy_placeholders(content: str) -> bool:
+    """Return True if file content contains lazy placeholder patterns.
+
+    Does NOT flag legitimate uses of '...' in prose text.
+    """
+    return bool(_LAZY_RE.search(content))
+
+
 def _shell_creates_file(cmd: str) -> bool:
     """Return True if a shell command appears to create/write a file."""
     return bool(_FILE_CREATION_RE.search(cmd))
@@ -279,8 +304,7 @@ async def execute_tool_call(
 
         if func_name == "write_file":
             code = str(call_args.get("content") or "")
-            placeholders = ["...", "// code here", "# content here", "<code", "précédemment donné"]
-            if any(p.lower() in code.lower() for p in placeholders):
+            if _has_lazy_placeholders(code):
                 await log("Failure: Laziness detected", type="error")
                 return "INVALID_ACTION: Placeholders detected. Re-write the file FULLY."
 

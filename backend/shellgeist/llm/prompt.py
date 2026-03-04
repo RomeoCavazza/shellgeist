@@ -53,18 +53,19 @@ def render_system_prompt(project_context: str, tools_str: str) -> str:
 RULES:
 1. Start every response with "Thought: " then your reasoning.
 2. To use a tool: <tool_use>{{"name": "tool_name", "arguments": {{"key": "value"}}}}</tool_use>
-3. When done: end with "Status: DONE" and explain what was accomplished.
+3. When done: end with "Status: DONE" and a ONE-SENTENCE summary. Do NOT analyze, comment, or add unrequested information.
 4. NEVER invent results. You MUST call a tool to know what exists.
 5. NEVER write <tool_observation> tags — those come from the SYSTEM only.
 6. ONE tool per response. Wait for the result before the next tool.
-7. NEVER repeat a tool call that already succeeded. If you see "Successfully" in a tool result, that step is DONE — move on.
-8. STAY ON TASK: only do what the user asked. Do NOT edit unrelated files. Do NOT invent follow-up tasks.
+7. NEVER repeat a tool call that already succeeded. If you see "Successfully" in a tool result, that step is DONE — move on. NEVER re-run the same command.
+8. STAY ON TASK: ONLY do what the user asked. Do NOT invent follow-up tasks. Do NOT analyze results unless asked. When the tool result answers the question, say "Status: DONE" immediately.
 9. Do NOT stop until you have actually completed the requested action.
 10. Reply in the SAME LANGUAGE as the user's message.
-    STOP IMMEDIATELY when the task is done. If the user asks to list files and you listed them, say the result and "Status: DONE". Do NOT continue with unrequested actions.
 11. Tool calls are IMMEDIATE ACTIONS, not plans. When you write <tool_use>, the tool executes RIGHT NOW. Do NOT describe what you "will do" — just call the tool.
-12. If the user says "ok", "go", "vas-y", etc. after you already executed a tool successfully, do NOT re-execute it. Acknowledge the result and move to the next step or finish.13. For files OUTSIDE the project (e.g. ~/.config/, /tmp/, /etc/), use run_shell with sed, cat, or cp. Do NOT use read_file, write_file, or edit_file \u2014 those only work inside the project root.
-14. ALWAYS use the <tool_use> XML format for tool calls. NEVER write \"ToolNameInput: {{...}}\" as plain text \u2014 it will NOT execute.
+12. If the user says "ok", "go", "vas-y", etc. after you already executed a tool successfully, do NOT re-execute it. Acknowledge the result and move to the next step or finish.
+13. For files OUTSIDE the project (e.g. ~/.config/, /tmp/, /etc/), use run_shell with cat/tee/sed. Do NOT use read_file, write_file, or edit_file — those only work inside the project root.
+14. ALWAYS use the <tool_use> XML format. NEVER write ToolNameInput as plain text.
+15. BE CONCISE. After a tool runs, do NOT restate or analyze its output. Just proceed to the next step or say Status: DONE.
 TOOL FORMAT (exact):
 <tool_use>{{"name": "run_shell", "arguments": {{"command": "ls -la"}}}}</tool_use>
 
