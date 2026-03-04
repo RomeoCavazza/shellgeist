@@ -47,16 +47,23 @@ def extract_canonical_response(text: str) -> str:
 
 
 def extract_actionable_thought(content: str, *, has_tool_calls: bool) -> str | None:
-    if not has_tool_calls:
-        return None
+    """Extract the Thought: section from LLM output.
+
+    Always extracts, regardless of whether tool calls were found —
+    the thought should be displayed to the user in all cases.
+    """
     thought_match = re.search(
-        r"Thoughts?:\s*(.*?)(?:\n\n|\n<(?:tool_use|tool_request|tool_call|tool)\b|$)",
+        r"Thoughts?:\s*(.*?)(?:\n\n|\n<(?:tool_use|tool_request|tool_call|tool)\b|\n[A-Z][a-zA-Z]+Input:|$)",
         content,
         re.DOTALL | re.IGNORECASE,
     )
     if not thought_match:
         return None
     thought = thought_match.group(1).strip()
+    # Cut overly long thoughts (the body after thought is the response, not thinking)
+    lines = thought.splitlines()
+    if len(lines) > 10:
+        thought = "\n".join(lines[:10])
     return thought or None
 
 

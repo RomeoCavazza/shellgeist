@@ -342,7 +342,7 @@ class Agent:
             thought_text = extract_actionable_thought(content, has_tool_calls=bool(tool_calls))
             if thought_text and thought_text != last_thought_emitted:
                 last_thought_emitted = thought_text
-                await _log(thought_text, type="thought")
+                await _emit_execution_event("reasoning", thought_text, phase="thinking")
 
             if has_markdown_without_tool_calls(content, has_tool_calls=bool(tool_calls)):
                 v_msg = PROTOCOL_MARKDOWN_WITHOUT_TOOL

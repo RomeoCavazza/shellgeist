@@ -197,11 +197,18 @@ local function render_user(text)
 end
 
 local function render_response(text)
+  -- Strip any "Thought:" prefix that was already emitted separately
+  local body = sanitize(text)
+  body = body:gsub("^%s*Thoughts?:%s*.-\n\n", "")
+  body = body:gsub("^%s*Status:%s*DONE%s*$", "")
+  body = vim.trim(body)
+  if body == "" then return end
+
   local header = "󰚩 Assistant"
   local start = buf_append({ header })
   if start then hl_range(start, 1, "SGResponse") end
   -- Render full multi-line response body
-  local body_lines = vim.split(sanitize(text), "\n", { plain = true })
+  local body_lines = vim.split(body, "\n", { plain = true })
   local body_start = buf_append(body_lines)
   if body_start then
     hl_range(body_start, #body_lines, "SGResponseBody")

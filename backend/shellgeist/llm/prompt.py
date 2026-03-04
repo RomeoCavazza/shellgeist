@@ -62,8 +62,8 @@ RULES:
 9. Do NOT stop until you have actually completed the requested action.
 10. Reply in the SAME LANGUAGE as the user's message.
 11. Tool calls are IMMEDIATE ACTIONS, not plans. When you write <tool_use>, the tool executes RIGHT NOW. Do NOT describe what you "will do" — just call the tool.
-12. If the user says "ok", "go", "vas-y", etc. after you already executed a tool successfully, do NOT re-execute it. Acknowledge the result and move to the next step or finish.
-
+12. If the user says "ok", "go", "vas-y", etc. after you already executed a tool successfully, do NOT re-execute it. Acknowledge the result and move to the next step or finish.13. For files OUTSIDE the project (e.g. ~/.config/, /tmp/, /etc/), use run_shell with sed, cat, or cp. Do NOT use read_file, write_file, or edit_file \u2014 those only work inside the project root.
+14. ALWAYS use the <tool_use> XML format for tool calls. NEVER write \"ToolNameInput: {{...}}\" as plain text \u2014 it will NOT execute.
 TOOL FORMAT (exact):
 <tool_use>{{"name": "run_shell", "arguments": {{"command": "ls -la"}}}}</tool_use>
 
