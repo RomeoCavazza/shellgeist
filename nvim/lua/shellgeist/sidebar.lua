@@ -467,6 +467,20 @@ local function render_diff_review(meta)
     if file_root ~= "" and not filepath:match("^/") then
       filepath = file_root .. "/" .. filepath
     end
+    -- Switch to a normal (non-floating) editor window before opening
+    local sidebar_wins = {}
+    if M.chat and win_valid(M.chat.winid) then sidebar_wins[M.chat.winid] = true end
+    if M.prompt and win_valid(M.prompt.winid) then sidebar_wins[M.prompt.winid] = true end
+    local target_win = nil
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if not sidebar_wins[w] and vim.api.nvim_win_get_config(w).relative == "" then
+        target_win = w
+        break
+      end
+    end
+    if target_win then
+      vim.api.nvim_set_current_win(target_win)
+    end
     -- Open with conflict markers via conflict.lua
     local conflict = require("shellgeist.conflict")
     conflict.show_inline(filepath, old_content, new_content, {
