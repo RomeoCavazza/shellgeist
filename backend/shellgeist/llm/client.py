@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from shellgeist.config import (
+    debug_enabled as _debug_enabled,
     http_timeout,
     models_list_timeout,
     models_probe_timeout,
@@ -20,11 +21,6 @@ from shellgeist.config import (
     shellgeist_model,
     shellgeist_model_fallback_keywords,
 )
-
-
-def _debug_enabled() -> bool:
-    v = str(os.getenv("SHELLGEIST_DEBUG", "")).strip().lower()
-    return v in {"1", "true", "yes", "on", "debug"}
 
 
 @dataclass

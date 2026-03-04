@@ -70,6 +70,7 @@ class AgentTaskRequest(SGBaseRequest):
     goal: str
     root: str
     session_id: str = "default"
+    mode: Literal["auto", "review"] = "auto"
 
 
 class ShellRequest(SGBaseRequest):

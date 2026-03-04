@@ -48,16 +48,3 @@ class AgentRunState:
         if verified_execution:
             self.verified_execution = True
         self.phase = AgentPhase.VERIFY
-
-    def can_complete(self) -> tuple[bool, str | None]:
-        if self.goal_requires_verify and self.touched_code and not self.verified_execution:
-            self.phase = AgentPhase.RECOVER
-            return (
-                False,
-                (
-                    "VERIFY_REQUIRED: task requests runnable verification, but no successful execution evidence was observed. "
-                    "Run a concrete in-project execution and capture success before Status: DONE."
-                ),
-            )
-        self.phase = AgentPhase.DONE
-        return (True, None)

@@ -3,6 +3,7 @@ local M = {}
 local rpc = require("shellgeist.rpc")
 local sidebar = require("shellgeist.sidebar")
 local diffview = require("shellgeist.diff")
+local conflict = require("shellgeist.conflict")
 
 local defaults = {
   socket = vim.fn.expand("~/.cache/shellgeist.sock"),
@@ -33,8 +34,18 @@ local function project_root()
   return git_root(cwd) or cwd
 end
 
+M._mode = "auto"  -- "auto" or "review"
+
 function M.setup(opts)
   M._cfg = vim.tbl_deep_extend("force", M._cfg, opts or {})
+end
+
+function M.set_mode(mode)
+  M._mode = mode or "auto"
+end
+
+function M.get_mode()
+  return M._mode or "auto"
 end
 
 local function handle_result(ev, on_ok)
@@ -139,7 +150,7 @@ function M._spawn_daemon(cb)
     return
   end
 
-  vim.fn.jobstart({ wrapper, "--daemon" }, {
+  vim.fn.jobstart({ wrapper, "daemon" }, {
     on_stderr = function(_, data)
       local debug_enabled = (vim.env.SHELLGEIST_DEBUG == "1")
       local lines = {}
@@ -198,7 +209,11 @@ function M.run_agent(goal)
       end
       ensure_daemon(function()
         local session_id = vim.fn.sha256(project_root())
-        M.reload_history(session_id)
+        M.reload_history(session_id, {
+          on_done = function()
+            sidebar.focus_prompt()
+          end,
+        })
       end)
       return
     end
@@ -214,7 +229,11 @@ function M.run_agent(goal)
       end
 
       local function run_agent()
-        local function handle_event(ev)
+        local current_reply_fn = nil
+
+        local function handle_event(ev, reply)
+          if reply then current_reply_fn = reply end
+
           if ev.type ~= "execution_event" or type(ev.event) ~= "table" then
             return false
           end
@@ -233,6 +252,112 @@ function M.run_agent(goal)
               thinking = true
             end
             sidebar.set_thinking(thinking)
+            return true
+          end
+
+          -- ── File changed: open inline diff in source buffer ──
+          if channel == "file_changed" then
+            local file_rel = meta.file or content or ""
+            local file_root = meta.root or root
+            if file_rel ~= "" then
+              vim.schedule(function()
+                local filepath = file_rel
+                -- Resolve relative paths
+                if not filepath:match("^/") then
+                  filepath = file_root .. "/" .. filepath
+                end
+                -- Use git to get old content, current file is new content
+                local old_cmd = { "git", "-C", file_root, "show", "HEAD:" .. file_rel }
+                local old_out = vim.fn.systemlist(old_cmd)
+                local current_lines = {}
+                if vim.fn.filereadable(filepath) == 1 then
+                  current_lines = vim.fn.readfile(filepath)
+                end
+                if vim.v.shell_error ~= 0 then
+                  old_out = {}  -- new file
+                end
+                if #old_out > 0 or #current_lines > 0 then
+                  local ok_c, err_c = pcall(conflict.show, filepath, old_out, current_lines)
+                  if ok_c then
+                    sidebar.append_text("Inline diff opened: " .. file_rel .. " — co=original ct=accept cb=both", "info", {})
+                  else
+                    sidebar.append_text("Diff display failed: " .. tostring(err_c), "error", {})
+                  end
+                end
+              end)
+            end
+            return true
+          end
+
+          -- ── Review mode: hunk-level review for edit_file ──
+          if channel == "review_pending" then
+            local file_rel = meta.file or content or ""
+            local old_content = meta.old_content or ""
+            local new_content = meta.new_content or ""
+
+            if file_rel ~= "" then
+              sidebar.set_thinking(false)
+              sidebar.append_text("📝 Review pending: " .. file_rel .. " — co=original ct=accept ca=all cr=reject", "action", meta)
+
+              vim.schedule(function()
+                local filepath = file_rel
+                if not filepath:match("^/") then
+                  filepath = root .. "/" .. filepath
+                end
+
+                local ok_c, err_c = pcall(conflict.show_inline, filepath, old_content, new_content, {
+                  on_complete = function(resolved_content)
+                    -- Send the review decision back to the daemon
+                    if current_reply_fn then
+                      if resolved_content then
+                        current_reply_fn({ cmd = "review_decision", approved = true, content = resolved_content })
+                        sidebar.append_text("✓ Review approved: " .. file_rel, "info", {})
+                      else
+                        current_reply_fn({ cmd = "review_decision", approved = false })
+                        sidebar.append_text("✗ Review rejected: " .. file_rel, "error", {})
+                      end
+                    end
+                    sidebar.set_thinking(true)
+                  end,
+                })
+
+                if not ok_c then
+                  sidebar.append_text("Review display failed: " .. tostring(err_c), "error", {})
+                  -- Auto-reject on display failure
+                  if current_reply_fn then
+                    current_reply_fn({ cmd = "review_decision", approved = false })
+                  end
+                end
+              end)
+            end
+            return true
+          end
+
+          -- ── Review mode: approval request ──
+          if channel == "approval_request" then
+            local tool = meta.tool or content or "unknown"
+            local args = meta.args or {}
+            local args_str = vim.json.encode(args)
+            if #args_str > 300 then args_str = args_str:sub(1, 300) .. "..." end
+
+            sidebar.set_thinking(false)
+            sidebar.append_text("⏸ Approval needed: " .. tool, "action", meta)
+            sidebar.append_text(args_str, "code", meta)
+
+            vim.ui.select({ "✓ Approve", "✗ Reject" }, {
+              prompt = "Execute " .. tool .. "?",
+            }, function(choice)
+              local approved = choice ~= nil and choice:find("Approve") ~= nil
+              if current_reply_fn then
+                current_reply_fn({ cmd = "approval_response", approved = approved })
+              end
+              if approved then
+                sidebar.append_text("✓ Approved", "info", {})
+              else
+                sidebar.append_text("✗ Rejected", "error", {})
+              end
+              sidebar.set_thinking(true)
+            end)
             return true
           end
 
@@ -257,16 +382,34 @@ function M.run_agent(goal)
         end
 
         sidebar.append_text(goal, "user")
-        rpc.request(M._cfg.socket, { cmd = "agent_task", root = root, goal = goal, session_id = session_id }, function(ev)
-          if ev.status == "eof" then return end
-          if handle_event(ev) then return end
-          -- Error from daemon final result
-          if ev.ok == false then
-            local err = ev.error or "error"
-            local detail = ev.detail and (" (" .. ev.detail .. ")") or ""
-            sidebar.append_text(err .. detail, "error")
-          end
-        end, { stream = true })
+        local agent_mode = M.get_mode()
+        local retried = false
+
+        local function do_agent_request()
+          rpc.request(M._cfg.socket, { cmd = "agent_task", root = root, goal = goal, session_id = session_id, mode = agent_mode }, function(ev, reply)
+            if ev.status == "eof" then return end
+
+            -- Auto-reconnect: if the daemon crashed mid-flight, respawn and retry once
+            if rpc.is_connect_error(ev) and not retried then
+              retried = true
+              sidebar.append_text("Daemon connection lost — reconnecting...", "info")
+              M._spawn_daemon(function()
+                do_agent_request()
+              end)
+              return
+            end
+
+            if handle_event(ev, reply) then return end
+            -- Error from daemon final result
+            if ev.ok == false then
+              local err = ev.error or "error"
+              local detail = ev.detail and (" (" .. ev.detail .. ")") or ""
+              sidebar.append_text(err .. detail, "error")
+            end
+          end, { stream = true })
+        end
+
+        do_agent_request()
       end
 
       if was_open then
@@ -406,6 +549,160 @@ vim.api.nvim_create_user_command("SGStatus", function()
       vim.bo.swapfile = false
     end)
   end)
+end, {})
+
+-- ── SGReview: show git diff in review panel (accept/reject/stage) ──
+-- Bang (!) opens flat diff tab instead of inline conflict view.
+
+vim.api.nvim_create_user_command("SGReview", function(opts)
+  local cwd = vim.loop.cwd()
+  local root = git_root(cwd)
+  if not root then
+    notify("Not inside a git repository (cwd: " .. cwd .. ")", vim.log.levels.WARN)
+    return
+  end
+  local file = opts.args ~= "" and opts.args or nil
+  local use_inline = not opts.bang  -- default: inline conflict view
+
+  -- Build the git diff command
+  local diff_cmd
+  if file then
+    diff_cmd = { "git", "-C", root, "diff", "--", file }
+  else
+    diff_cmd = { "git", "-C", root, "diff" }
+  end
+
+  local diff_out = vim.fn.systemlist(diff_cmd)
+  if vim.v.shell_error ~= 0 or not diff_out or #diff_out == 0 then
+    -- Try staged diff too
+    local staged_cmd
+    if file then
+      staged_cmd = { "git", "-C", root, "diff", "--cached", "--", file }
+    else
+      staged_cmd = { "git", "-C", root, "diff", "--cached" }
+    end
+    diff_out = vim.fn.systemlist(staged_cmd)
+    if not diff_out or #diff_out == 0 then
+      notify("No changes to review", vim.log.levels.INFO)
+      return
+    end
+  end
+
+  local diff_text = table.concat(diff_out, "\n")
+
+  -- Extract file from diff header if not specified
+  local review_file = file
+  if not review_file then
+    for _, line in ipairs(diff_out) do
+      local f = line:match("^diff %-%-git a/(.-) b/")
+      if f then
+        review_file = f
+        break
+      end
+    end
+  end
+
+  if use_inline then
+    -- Inline conflict view (avante-style): show <<<<<<< / ======= / >>>>>>>
+    -- directly in the source buffer with co/ct/cb/ca keybindings
+    local ok_c, err_c = pcall(function()
+      conflict.show_from_diff(diff_text, root)
+    end)
+    if ok_c then
+      notify("Review (inline): " .. (review_file or "all changes") .. " — co=original ct=accept cb=both ca=all ]x/[x=nav")
+    else
+      notify("Inline review failed, falling back to diff tab: " .. tostring(err_c), vim.log.levels.WARN)
+      -- Fall back to diff tab
+      local ok_d, err_d = pcall(function()
+        diffview.preview(diff_text, {
+          root = root,
+          file = review_file or "",
+          patch = diff_text,
+          instruction = "review",
+        })
+      end)
+      if not ok_d then
+        open_diff_fallback(diff_text, "ShellGeist Review")
+      end
+    end
+  else
+    -- Flat diff tab (SGReview! with bang)
+    local ok, err = pcall(function()
+      diffview.preview(diff_text, {
+        root = root,
+        file = review_file or "",
+        patch = diff_text,
+        instruction = "review",
+      })
+    end)
+    if ok then
+      notify("Review (tab): " .. (review_file or "all changes") .. " — a=apply s=stage R=restore q=close")
+    else
+      notify("Review failed: " .. tostring(err), vim.log.levels.ERROR)
+      open_diff_fallback(diff_text, "ShellGeist Review")
+    end
+  end
+end, { bang = true, nargs = "?", complete = "file" })
+
+-- ── SGDashboardToggle (alias for sidebar toggle) ──
+
+vim.api.nvim_create_user_command("SGDashboardToggle", function()
+  sidebar.toggle()
+end, {})
+
+-- ── SGDiagnostic: print environment / connection health ──
+
+vim.api.nvim_create_user_command("SGDiagnostic", function()
+  local lines = {}
+  local function add(label, value)
+    table.insert(lines, string.format("%-24s %s", label, tostring(value)))
+  end
+
+  add("socket", M._cfg.socket)
+  add("mode", M.get_mode())
+  add("sidebar_open", tostring(sidebar.is_open()))
+  add("project_root", project_root())
+  add("OPENAI_BASE_URL", vim.env.OPENAI_BASE_URL or "(not set)")
+  add("OPENAI_API_KEY", vim.env.OPENAI_API_KEY and "(set)" or "(not set)")
+  add("SHELLGEIST_MODEL_FAST", vim.env.SHELLGEIST_MODEL_FAST or "(default)")
+  add("SHELLGEIST_MODEL_SMART", vim.env.SHELLGEIST_MODEL_SMART or "(default)")
+  add("SHELLGEIST_DEBUG", vim.env.SHELLGEIST_DEBUG or "0")
+
+  -- Probe daemon
+  local socket = M._cfg.socket
+  local socket_exists = vim.fn.filereadable(socket) == 1 or vim.loop.fs_stat(socket) ~= nil
+  add("socket_exists", tostring(socket_exists))
+
+  if socket_exists then
+    rpc.request(socket, { cmd = "ping" }, function(ev)
+      if ev.ok then
+        add("daemon", "running (ping OK)")
+      else
+        add("daemon", "not responding (" .. tostring(ev.error or "unknown") .. ")")
+      end
+
+      vim.schedule(function()
+        vim.cmd("tabnew")
+        local buf = vim.api.nvim_get_current_buf()
+        vim.api.nvim_buf_set_name(buf, "ShellGeist Diagnostic")
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+        vim.bo[buf].buftype = "nofile"
+        vim.bo[buf].bufhidden = "wipe"
+        vim.bo[buf].swapfile = false
+        vim.bo[buf].modifiable = false
+      end)
+    end)
+  else
+    add("daemon", "socket not found")
+    vim.cmd("tabnew")
+    local buf = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_name(buf, "ShellGeist Diagnostic")
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.bo[buf].buftype = "nofile"
+    vim.bo[buf].bufhidden = "wipe"
+    vim.bo[buf].swapfile = false
+    vim.bo[buf].modifiable = false
+  end
 end, {})
 
 return M

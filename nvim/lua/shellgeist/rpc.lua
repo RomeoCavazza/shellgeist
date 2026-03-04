@@ -1,7 +1,7 @@
 local M = {}
 
-local function safe_cb(cb, ev)
-  local ok, err = pcall(cb, ev)
+local function safe_cb(cb, ev, reply)
+  local ok, err = pcall(cb, ev, reply)
   if not ok then
     vim.schedule(function()
       vim.notify("ShellGeist RPC callback error: " .. tostring(err), vim.log.levels.ERROR, { title = "ShellGeist" })
@@ -17,6 +17,18 @@ local function decode_json(line)
   return nil, "bad_json"
 end
 
+--- Check whether an RPC error is a connect / pipe failure that hints
+--- the daemon process crashed or was stopped.
+---@param ev table  result event
+---@return boolean
+function M.is_connect_error(ev)
+  if ev.ok then return false end
+  local err = ev.error or ""
+  return err == "connect_failed"
+      or err == "rpc_pipe_failed"
+      or err == "write_failed"
+end
+
 function M.request(sock_path, payload, cb, opts)
   opts = opts or {}
   cb = cb or function(_) end
@@ -27,6 +39,14 @@ function M.request(sock_path, payload, cb, opts)
       cb({ type = "result", ok = false, error = "rpc_pipe_failed" })
     end)
     return
+  end
+
+  -- Reply function: allows the callback to write back on the same pipe (for review mode approval)
+  local reply_fn = function(response_payload)
+    if pipe and not done then
+      local line = vim.json.encode(response_payload) .. "\n"
+      pipe:write(line, function(_werr) end)
+    end
   end
 
   local done = false
@@ -75,7 +95,7 @@ function M.request(sock_path, payload, cb, opts)
                 finish(obj)
                 return
               end
-              vim.schedule(function() safe_cb(cb, obj) end)
+              vim.schedule(function() safe_cb(cb, obj, reply_fn) end)
             end
           end
           finish({ type = "result", ok = true, status = "eof" })
@@ -98,7 +118,7 @@ function M.request(sock_path, payload, cb, opts)
               finish(obj)
               return
             end
-            vim.schedule(function() safe_cb(cb, obj) end)
+            vim.schedule(function() safe_cb(cb, obj, reply_fn) end)
           else
             if not opts.stream then
               finish({ type = "result", ok = false, error = derr or "bad_json" })

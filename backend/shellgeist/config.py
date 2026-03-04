@@ -57,3 +57,14 @@ def models_list_timeout() -> int:
 
 def models_probe_timeout() -> int:
     return _env_int("SHELLGEIST_MODELS_PROBE_TIMEOUT", 1)
+
+
+# --- Debug ---
+def debug_enabled() -> bool:
+    """True when ``SHELLGEIST_DEBUG`` is set to a truthy value."""
+    v = str(_env("SHELLGEIST_DEBUG", "")).strip().lower()
+    return v in {"1", "true", "yes", "on", "debug"}
+
+
+# Re-export for external consumers that need env_int
+env_int = _env_int

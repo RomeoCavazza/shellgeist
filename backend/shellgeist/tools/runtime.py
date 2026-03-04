@@ -43,6 +43,10 @@ def normalize_tool_args(
             "wait_ms",
             "max_bytes",
             "python_packages",
+            "pattern",
+            "directory",
+            "recursive",
+            "depth",
         ):
             if key in tc:
                 args[key] = tc.get(key)
@@ -82,9 +86,16 @@ def missing_required_args(func_name: str, args: dict[str, Any]) -> list[str]:
     }
     required = required_by_tool.get(func_name, [])
     missing: list[str] = []
+    # Keys where empty string is a valid value (e.g. write_file content="" to clear a file)
+    allow_empty = {"content"}
     for key in required:
         value = args.get(key)
-        if value is None or (isinstance(value, str) and not value.strip()):
+        # Accept file/path interchangeably
+        if value is None and key in ("file", "path"):
+            value = args.get("path") if key == "file" else args.get("file")
+        if value is None:
+            missing.append(key)
+        elif isinstance(value, str) and not value.strip() and key not in allow_empty:
             missing.append(key)
     return missing
 

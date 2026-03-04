@@ -16,6 +16,28 @@ from shellgeist.tools.runtime import (
     detect_execution_evidence,
 )
 
+# Patterns that indicate a shell command is trying to create/write a file
+_FILE_CREATION_RE = re.compile(
+    r"""
+    (?:^|\s|;|&&|\|\|)              # start or chained command
+    (?:
+        echo\s+.*?>\s*\S            # echo ... > file
+        | printf\s+.*?>\s*\S        # printf ... > file
+        | cat\s*<<                  # cat << heredoc
+        | tee\s+\S                  # tee file
+        | >\s*\S                    # > file (truncate)
+        | python[23]?\s+-c\s+.*open\(  # python -c "open(..."
+        | dd\s+.*of=                # dd of=file
+    )
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def _shell_creates_file(cmd: str) -> bool:
+    """Return True if a shell command appears to create/write a file."""
+    return bool(_FILE_CREATION_RE.search(cmd))
+
 
 @dataclass
 class ToolExecutionOutcome:
@@ -45,6 +67,8 @@ async def execute_tool_call(
     emit_execution_event: Callable[..., Awaitable[None]],
     log: Callable[..., Awaitable[None]],
     code_preview_for_tool: Callable[[str, dict[str, Any]], str | None],
+    review_mode: bool = False,
+    request_review: Callable[..., Awaitable[str | None]] | None = None,
 ) -> ToolExecutionOutcome:
     tool_meta = build_tool_meta(func_name, args)
     await emit_execution_event("status", "", phase="tool_use", meta={"tool": func_name})
@@ -92,6 +116,21 @@ async def execute_tool_call(
             call_args, healed = auto_heal_session_id(call_args, last_shell_session_id)
             if healed:
                 await log(f"Auto-heal session_id -> {last_shell_session_id}", type="info")
+
+        # Inject review_mode for edit_file in review mode
+        if review_mode and func_name == "edit_file":
+            call_args["review_mode"] = True
+
+        # Block run_shell from creating/writing files — force use of write_file
+        if func_name in ("run_shell", "exec_shell_session"):
+            cmd = str(call_args.get("command") or "")
+            if _shell_creates_file(cmd):
+                await log("Blocked: shell file creation detected, use write_file instead", type="error")
+                return (
+                    "INVALID_ACTION: Do NOT create files via shell commands. "
+                    "Use the `write_file` tool with `path` and `content` parameters instead. "
+                    'Example: <tool_use>{"name": "write_file", "arguments": {"path": "file.md", "content": "# Title\\nContent"}}</tool_use>'
+                )
 
         if func_name == "write_file":
             code = str(call_args.get("content") or "")
@@ -168,7 +207,47 @@ async def execute_tool_call(
     blocked_outcome, blocked_msg = loop_guard.record_outcome(func_name, args, res_str)
     if blocked_outcome and blocked_msg:
         await log(blocked_msg, type="info", meta=tool_meta)
+
+    # ── Review mode: hunk-level review for edit_file ──
+    if review_mode and func_name == "edit_file" and tool_report.outcome == "success" and request_review:
+        try:
+            result_data = res if isinstance(res, dict) else {}
+            if result_data.get("ok") and not result_data.get("written"):
+                old_c = result_data.get("old_content", "")
+                new_c = result_data.get("new_content", "")
+                fpath = result_data.get("file", "")
+                if fpath and (old_c or new_c):
+                    await log(f"Review pending: {fpath}", type="info", meta=tool_meta)
+                    resolved = await request_review(fpath, old_c, new_c)
+                    if resolved is not None:
+                        from shellgeist.tools.coder import write_reviewed_content
+                        write_reviewed_content(fpath, resolved, root=root)
+                        res_str = f"Successfully edited {fpath} (review approved, hunks resolved)"
+                        touched_code = True
+                    else:
+                        res_str = f"Edit rejected by user for {fpath} in review mode"
+                        await log(res_str, type="info", meta=tool_meta)
+        except Exception as exc:
+            _trace_msg = f"review_flow_error: {exc}"
+            await log(_trace_msg, type="error", meta=tool_meta)
+
     await log(res_str[:4000], type="observation")
+
+    # ── Emit file_changed event for write_file / edit_file ──
+    # This allows the frontend to open inline diff in the source buffer.
+    if func_name in ("write_file", "edit_file") and tool_report.outcome == "success":
+        file_path = str(args.get("path") or args.get("file_path") or args.get("file") or "")
+        if file_path and "Successfully" in res_str:
+            await emit_execution_event(
+                "file_changed",
+                file_path,
+                phase="tool_use",
+                meta={
+                    "file": file_path,
+                    "root": root,
+                    "tool": func_name,
+                },
+            )
 
     return ToolExecutionOutcome(
         kind="observation",

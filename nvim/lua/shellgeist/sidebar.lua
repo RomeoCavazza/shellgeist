@@ -83,6 +83,8 @@ local function define_highlights()
   hl(0, "SGDiffAdd",      { fg = "#4ade80", bg = "#1a2e1a" })
   hl(0, "SGDiffDel",      { fg = "#f87171", bg = "#2e1a1a" })
   hl(0, "SGDiffHdr",      { fg = "#60a5fa" })
+  -- Success line
+  hl(0, "SGSuccess",      { fg = "#4ade80", bold = true })
   -- Error
   hl(0, "SGError",        { fg = "#ef4444", bold = true })
   -- Spinner
@@ -158,15 +160,14 @@ local function build_card(header, body, max_body)
 end
 
 --- Check if text content looks like a unified diff.
+--- Requires actual diff markers (@@, --- a/, +++ b/) — not just +/- lines.
 local function is_diff_content(text)
-  if text:find("^---") or text:find("^%+%+%+") or text:find("^@@") then return true end
-  if text:find("\n---") or text:find("\n%+%+%+") or text:find("\n@@") then return true end
-  local adds, dels = 0, 0
-  for line in text:gmatch("[^\n]+") do
-    if line:sub(1, 1) == "+" and line:sub(1, 3) ~= "+++" then adds = adds + 1 end
-    if line:sub(1, 1) == "-" and line:sub(1, 3) ~= "---" then dels = dels + 1 end
-  end
-  return (adds + dels) >= 3
+  local has_hunk = text:find("^@@") or text:find("\n@@")
+  local has_old  = text:find("^--- a/") or text:find("\n--- a/")
+  local has_new  = text:find("^%+%+%+ b/") or text:find("\n%+%+%+ b/")
+  if has_hunk then return true end
+  if has_old and has_new then return true end
+  return false
 end
 
 -- ── rendering functions ────────────────────────────────────────────────
@@ -289,21 +290,49 @@ local function render_code(text, meta)
   scroll_bottom()
 end
 
+--- Check if a line looks like a success message.
+local function is_success_line(text)
+  local t = text:lower()
+  return t:find("successfully") ~= nil
+      or t:find("^success") ~= nil
+      or t:find("applied:") ~= nil
+      or t:find("staged:") ~= nil
+      or t:find("restored:") ~= nil
+end
+
 local function render_observation(text, meta)
   local file = (meta and meta.file) or ""
   local label = file ~= "" and ("󱍬 " .. file) or "󱍬 Result"
   local raw = sanitize(text)
   local body_lines = vim.split(raw, "\n", { plain = true })
+  local is_diff = is_diff_content(raw)
   local card = build_card(label, body_lines, 30)
   local start = buf_append(card)
   if start then
     hl_range(start, 1, "SGCardResult")
     for i = 2, #card do
-      hl_partial(start + i - 1, 0, 4, "SGCardBorder")
-      if i < #card and card[i] and #card[i] > 4 then
-        hl_partial(start + i - 1, 4, -1, "SGCardBody")
+      local line_idx = start + i - 1
+      local line_text = card[i] or ""
+      local content = line_text:sub(5) -- strip "│ " prefix (may be multi-byte)
+      hl_partial(line_idx, 0, 4, "SGCardBorder")
+      if i < #card and #line_text > 4 then
+        if is_diff then
+          if content:sub(1, 1) == "+" and content:sub(1, 3) ~= "+++" then
+            hl_partial(line_idx, 4, -1, "SGDiffAdd")
+          elseif content:sub(1, 1) == "-" and content:sub(1, 3) ~= "---" then
+            hl_partial(line_idx, 4, -1, "SGDiffDel")
+          elseif content:sub(1, 2) == "@@" then
+            hl_partial(line_idx, 4, -1, "SGDiffHdr")
+          else
+            hl_partial(line_idx, 4, -1, "SGCardBody")
+          end
+        elseif is_success_line(content) then
+          hl_partial(line_idx, 4, -1, "SGSuccess")
+        else
+          hl_partial(line_idx, 4, -1, "SGCardBody")
+        end
       else
-        hl_range(start + i - 1, 1, "SGCardBorder")
+        hl_range(line_idx, 1, "SGCardBorder")
       end
     end
   end
@@ -426,11 +455,14 @@ function M.open()
     })
 
     local prompt_widget
+    local sg = require("shellgeist")
+    local mode = sg.get_mode and sg.get_mode() or "auto"
+    local prompt_label = mode == "review" and " [Review] " or " [Request] "
     prompt_widget = Input({
       border = {
         style = "rounded",
         highlight = "SGBorder",
-        text = { top = " [Request] ", top_align = "center" },
+        text = { top = prompt_label, top_align = "center" },
       },
       win_options = {
         winhighlight = "Normal:Normal,FloatBorder:SGBorder",
@@ -488,6 +520,15 @@ function M.render_welcome()
   pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, 0, -1, false, lines)
   pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGTitle", 0, 0, -1)
   pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGCardBorder", 3, 0, -1)
+end
+
+function M.focus_prompt()
+  if M.prompt and win_valid(M.prompt.winid) then
+    vim.schedule(function()
+      pcall(vim.api.nvim_set_current_win, M.prompt.winid)
+      vim.cmd("startinsert")
+    end)
+  end
 end
 
 -- ── append_text (main entry for all message types) ─────────────────────
@@ -575,7 +616,10 @@ function M.set_thinking(is_thinking)
   else
     if spinner_timer then spinner_timer:stop(); spinner_timer:close(); spinner_timer = nil end
     M._current_status = "request"
-    set_prompt_top(" [Request] ")
+    local sg = require("shellgeist")
+    local mode = sg.get_mode and sg.get_mode() or "auto"
+    local label = mode == "review" and " [Review] " or " [Request] "
+    set_prompt_top(label)
   end
 end
 

@@ -9,6 +9,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from shellgeist.config import env_int as _env_int
+
 RetryClass = str
 
 
@@ -23,15 +25,6 @@ class RetryConfig:
 
     @staticmethod
     def from_env() -> RetryConfig:
-        def _env_int(name: str, default: int) -> int:
-            raw = os.environ.get(name)
-            if not raw:
-                return default
-            try:
-                return int(raw)
-            except ValueError:
-                return default
-
         return RetryConfig(
             max_attempts=max(1, _env_int("SHELLGEIST_RETRY_MAX_ATTEMPTS", 3)),
             max_total_retries=max(0, _env_int("SHELLGEIST_RETRY_MAX_TOTAL", 24)),
@@ -207,6 +200,9 @@ def classify_exception(exc: Exception) -> tuple[RetryClass, str]:
 
 
 def classify_result_payload(result: Any, *, tool_name: str | None = None) -> tuple[RetryClass | None, str]:
+    # Empty list/dict from tools like find_files/list_files is a valid result, not transient
+    if isinstance(result, (list, dict)):
+        return None, ""
     text = str(result or "").strip()
     if not text:
         return "transient", "empty_result"

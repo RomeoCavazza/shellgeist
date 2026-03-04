@@ -1,7 +1,6 @@
 """Core agent loop: LLM interaction, tool dispatch, and result handling."""
 from __future__ import annotations
 
-import os
 import sys
 from typing import Any
 
@@ -16,6 +15,7 @@ from shellgeist.agent.orchestrator import (
     ToolCallQueue,
     build_schema_error_message,
     decide_no_tool_action,
+    extract_plaintext_tool_calls,
 )
 from shellgeist.agent.state import AgentRunState
 from shellgeist.io import (
@@ -41,17 +41,14 @@ from shellgeist.session.ops import (
     load_recent_history,
     save_assistant_message,
 )
-from shellgeist.tools import registry
+from shellgeist.config import debug_enabled as _debug_enabled
+from shellgeist.tools import load_tools, registry
 from shellgeist.tools.executor import execute_tool_call
 from shellgeist.tools.parser import parse_xml_tool_use as _parse_xml_tool_use
 from shellgeist.tools.policy import ToolPolicy
 from shellgeist.tools.preview import code_preview_for_tool
 from shellgeist.tools.runtime import missing_required_args, normalize_tool_args
 
-
-def _debug_enabled() -> bool:
-    v = str(os.getenv("SHELLGEIST_DEBUG", "")).strip().lower()
-    return v in {"1", "true", "yes", "on", "debug"}
 
 def _debug_log(msg: str):
     if not _debug_enabled():
@@ -62,6 +59,7 @@ def _debug_log(msg: str):
 class Agent:
     def __init__(self, root: str) -> None:
         _debug_log(f"Agent.__init__ start: {root}")
+        load_tools()
         self.root = root
         _debug_log("Getting client...")
         try:
@@ -84,14 +82,15 @@ class Agent:
         )
         self.history = [{"role": "system", "content": sys_prompt}]
 
-    async def run_task(self, goal: str, writer: Any | None = None, session_id: str = "default") -> dict[str, Any]:
-        _debug_log(f"run_task start: {goal}")
+    async def run_task(self, goal: str, writer: Any | None = None, session_id: str = "default", mode: str = "auto", reader: Any | None = None) -> dict[str, Any]:
+        _debug_log(f"run_task start: {goal} (mode={mode})")
         initialize_history_db()
 
-        ui = UIEventEmitter(writer)
+        ui = UIEventEmitter(writer, reader=reader)
         _emit_execution_event = ui.emit_execution_event
         _log = ui.log
         _status = ui.status
+        review_mode = (mode == "review")
 
         # 1. Load history from DB
         self.history = load_recent_history(self.history, session_id=session_id, max_recent=40)
@@ -167,8 +166,40 @@ class Agent:
                      await _log(content, type="error")
                      return failed_result(error="provider_error", status="", detail=content)
 
+            # ── Detect hallucinated tool observations ──
+            # The LLM sometimes outputs <tool_observation> tags, mimicking
+            # system responses instead of actually calling tools.
+            import re as _re
+            if _re.search(r"<tool_observation\b", content, _re.IGNORECASE):
+                _debug_log("Hallucinated <tool_observation> detected — forcing retry")
+                # Strip the hallucinated observations and tell the LLM to actually call tools
+                hallucination_msg = (
+                    "HALLUCINATION_ERROR: You wrote <tool_observation> tags in your response. "
+                    "You CANNOT write tool observations — those come from the SYSTEM after you call a tool. "
+                    "You MUST actually CALL each tool with <tool_use> tags to get real results. "
+                    "Do NOT pretend you already executed a tool. Call it now."
+                )
+                await _log(hallucination_msg, type="info")
+                self.history.append({"role": "user", "content": hallucination_msg})
+                continue
+
             tool_calls = _parse_xml_tool_use(content, debug_log=_debug_log)
-            _debug_log(f"Found {len(tool_calls)} tool calls")
+            _debug_log(f"Found {len(tool_calls)} tool calls (XML)")
+
+            # ── Fallback: detect plaintext tool calls (7B models) ──
+            if not tool_calls:
+                plaintext_calls = extract_plaintext_tool_calls(content)
+                if plaintext_calls:
+                    _debug_log(f"Found {len(plaintext_calls)} plaintext tool calls (fallback)")
+                    tool_calls = plaintext_calls
+                    # Warn the model about correct format for next time
+                    format_hint = (
+                        "NOTE: Your tool call was detected from plain text. "
+                        "Next time, use XML format: <tool_use>{\"name\": \"...\", \"arguments\": {...}}</tool_use>"
+                    )
+                    await _log(format_hint, type="info")
+
+            _debug_log(f"Total tool calls: {len(tool_calls)}")
 
             thought_text = extract_actionable_thought(content, has_tool_calls=bool(tool_calls))
             if thought_text and thought_text != last_thought_emitted:
@@ -237,6 +268,22 @@ class Agent:
                     continue
 
                 run_state.on_tool_start()
+
+                # ── Review mode: ask user approval before executing ──
+                # For edit_file, approval is handled via hunk-level review
+                # inside executor.py (review_pending flow), not binary gate.
+                if review_mode and func_name != "edit_file":
+                    approved = await ui.request_approval(func_name, args)
+                    if not approved:
+                        skip_msg = f"User rejected tool call: {func_name}"
+                        await _log(skip_msg, type="info", meta={"tool": func_name})
+                        observations.append(
+                            f"<tool_observation name=\"{func_name}\">\n"
+                            f"SKIPPED: User rejected this tool call in review mode.\n"
+                            f"</tool_observation>"
+                        )
+                        continue
+
                 outcome = await execute_tool_call(
                     func_name=func_name,
                     args=args if isinstance(args, dict) else {},
@@ -251,6 +298,8 @@ class Agent:
                     emit_execution_event=_emit_execution_event,
                     log=_log,
                     code_preview_for_tool=code_preview_for_tool,
+                    review_mode=review_mode,
+                    request_review=ui.request_review if review_mode else None,
                 )
 
                 if outcome.kind == "failure":

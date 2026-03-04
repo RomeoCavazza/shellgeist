@@ -6,6 +6,7 @@ frontend to render every message twice when both handlers fired.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from shellgeist.io.transport import safe_drain, send_json
@@ -26,8 +27,9 @@ def channel_from_log_type(log_type: str) -> str:
 
 
 class UIEventEmitter:
-    def __init__(self, writer: Any | None) -> None:
+    def __init__(self, writer: Any | None, reader: Any | None = None) -> None:
         self.writer = writer
+        self.reader = reader
 
     async def emit_execution_event(
         self,
@@ -66,3 +68,75 @@ class UIEventEmitter:
             phase="thinking" if thinking else "idle",
             meta={"thinking": thinking},
         )
+
+    async def request_approval(self, tool_name: str, args: dict[str, Any]) -> bool:
+        """Send an approval_request event and wait for the client's response.
+
+        Returns True if the user approved, False otherwise.
+        In auto mode (no reader) or on any error, defaults to True.
+        """
+        if not self.writer or not self.reader:
+            return True
+
+        # Build a human-readable summary of the tool call
+        args_summary = json.dumps(args, ensure_ascii=False, indent=2)
+        if len(args_summary) > 2000:
+            args_summary = args_summary[:2000] + "\n..."
+
+        await self.emit_execution_event(
+            "approval_request",
+            f"{tool_name}",
+            phase="tool_use",
+            meta={"tool": tool_name, "args": args},
+        )
+
+        try:
+            line = await self.reader.readline()
+            if not line:
+                return True
+            obj = json.loads(line)
+            if isinstance(obj, dict) and obj.get("cmd") == "approval_response":
+                return bool(obj.get("approved", False))
+        except Exception:
+            pass
+        return True
+
+    async def request_review(
+        self,
+        file: str,
+        old_content: str,
+        new_content: str,
+    ) -> str | None:
+        """Send a review_pending event and wait for the user's review decision.
+
+        The frontend shows inline conflict markers for hunk-level review.
+        Returns the user-resolved content string on approval, or ``None``
+        if the review was rejected.  Defaults to ``None`` when no reader
+        is available.
+        """
+        if not self.writer or not self.reader:
+            return None
+
+        await self.emit_execution_event(
+            "review_pending",
+            file,
+            phase="review",
+            meta={
+                "file": file,
+                "old_content": old_content,
+                "new_content": new_content,
+            },
+        )
+
+        try:
+            line = await self.reader.readline()
+            if not line:
+                return None
+            obj = json.loads(line)
+            if isinstance(obj, dict) and obj.get("cmd") == "review_decision":
+                if obj.get("approved"):
+                    content = obj.get("content")
+                    return content if isinstance(content, str) else None
+        except Exception:
+            pass
+        return None

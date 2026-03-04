@@ -2,26 +2,31 @@
 from __future__ import annotations
 
 import difflib
+import os
 from pathlib import Path
 
 _TRIPLE_DQ = '"' * 3
 _TRIPLE_SQ = "'" * 3
 
+_BOM_ZW = "\ufeff\u200b"
 
-def _has_control_chars(s: str) -> bool:
-    """
-    Block ASCII control characters except common whitespace: \\n, \\r, \\t.
-    """
-    for ch in s:
-        o = ord(ch)
-        if o < 32 and ch not in ("\n", "\r", "\t"):
-            return True
-    return False
+
+def _strip_bom_zw(s: str) -> str:
+    return (s or "").lstrip(_BOM_ZW)
+
+
+def _is_effectively_blank(s: str) -> bool:
+    return _strip_bom_zw(s).strip() == ""
+
+
+def _guard_trace(msg: str) -> None:
+    if os.environ.get("SHELLGEIST_TRACE") == "1":
+        print(f"[ShellGeist][guards] {msg}", flush=True)
 
 
 def _has_future_import(text: str) -> bool:
     for ln in (text or "").splitlines():
-        if ln.lstrip().startswith("from __future__ import"):
+        if _strip_bom_zw(ln).lstrip().startswith("from __future__ import"):
             return True
     return False
 
@@ -31,6 +36,8 @@ def _future_import_is_in_allowed_region(new: str) -> bool:
     Python rule: future imports must appear near the top:
     - may be preceded by: blank lines, comments, module docstring
     - NOT preceded by: normal imports/statements/assignments/etc.
+
+    Handles BOM / zero-width chars that LLMs sometimes inject.
     """
     lines = (new or "").splitlines()
     i = 0
@@ -38,21 +45,19 @@ def _future_import_is_in_allowed_region(new: str) -> bool:
     # blank lines + comments
     while i < len(lines):
         s = lines[i]
-        if s.strip() == "":
+        if _is_effectively_blank(s):
             i += 1
             continue
-        if s.lstrip().startswith("#"):
+        if _strip_bom_zw(s).lstrip().startswith("#"):
             i += 1
             continue
         break
 
     # optional module docstring
     if i < len(lines):
-        s0 = lines[i].lstrip()
+        s0 = _strip_bom_zw(lines[i]).lstrip()
         if s0.startswith(_TRIPLE_DQ) or s0.startswith(_TRIPLE_SQ):
             q = _TRIPLE_DQ if s0.startswith(_TRIPLE_DQ) else _TRIPLE_SQ
-
-            # opening+closing on same line
             if s0.count(q) >= 2:
                 i += 1
             else:
@@ -64,15 +69,17 @@ def _future_import_is_in_allowed_region(new: str) -> bool:
                     i += 1
 
     # blank lines after docstring
-    while i < len(lines) and lines[i].strip() == "":
+    while i < len(lines) and _is_effectively_blank(lines[i]):
         i += 1
 
-    return i < len(lines) and lines[i].lstrip().startswith("from __future__ import")
+    return i < len(lines) and _strip_bom_zw(lines[i]).lstrip().startswith("from __future__ import")
 
 
-def _guard_future_import(old: str, new: str) -> tuple[bool, str]:
-    """
-    Only enforce if the *old* file had a future import.
+def guard_future_import(old: str, new: str) -> tuple[bool, str]:
+    """Only enforce if the *old* file had a future import.
+
+    Returns ``(ok, reason)`` — when *ok* is ``False``, *reason* explains
+    what went wrong (``future_import_removed`` or ``future_import_moved``).
     """
     if not _has_future_import(old):
         return True, ""
@@ -81,9 +88,105 @@ def _guard_future_import(old: str, new: str) -> tuple[bool, str]:
         return False, "future_import_removed"
 
     if not _future_import_is_in_allowed_region(new):
+        new_lines = (new or "").splitlines()
+        first_idx = next(
+            (idx for idx, ln in enumerate(new_lines)
+             if _strip_bom_zw(ln).lstrip().startswith("from __future__ import")),
+            -1,
+        )
+        _guard_trace(
+            "future_import_guard BLOCKED: future_import_moved "
+            f"(expected at top, found first at line {first_idx + 1})"
+        )
         return False, "future_import_moved"
 
     return True, ""
+
+
+def autofix_future_import(old: str, new: str) -> str:
+    """Try to move ``from __future__`` back to the legal position.
+
+    If the *old* file had future imports and the LLM displaced or removed
+    them in *new*, attempt to relocate them.  Returns *new* unchanged when
+    no fix is possible or necessary.
+    """
+    old_lines = (old or "").splitlines(keepends=True)
+    old_future = [
+        _strip_bom_zw(ln).lstrip()
+        for ln in old_lines
+        if _strip_bom_zw(ln).lstrip().startswith("from __future__ import")
+    ]
+    if not old_future:
+        return new
+
+    new_lines = (new or "").splitlines(keepends=True)
+    if not new_lines:
+        return new
+
+    def _find_insert_point(lines: list[str]) -> int:
+        """Skip comments, blanks, and docstring to find the insertion point."""
+        j = 0
+        while j < len(lines):
+            s = lines[j]
+            if _is_effectively_blank(s):
+                j += 1
+                continue
+            if _strip_bom_zw(s).lstrip().startswith("#"):
+                j += 1
+                continue
+            break
+
+        if j < len(lines):
+            s0 = _strip_bom_zw(lines[j]).lstrip()
+            if s0.startswith(_TRIPLE_DQ) or s0.startswith(_TRIPLE_SQ):
+                q = _TRIPLE_DQ if s0.startswith(_TRIPLE_DQ) else _TRIPLE_SQ
+                if s0.count(q) >= 2:
+                    j += 1
+                else:
+                    j += 1
+                    while j < len(lines):
+                        if q in lines[j]:
+                            j += 1
+                            break
+                        j += 1
+        return j
+
+    fut_idx = [
+        i for i, ln in enumerate(new_lines)
+        if _strip_bom_zw(ln).lstrip().startswith("from __future__ import")
+    ]
+
+    if not fut_idx:
+        # Future imports removed — re-insert from old
+        insert = _find_insert_point(new_lines)
+        fixed = "".join(new_lines[:insert] + old_future + new_lines[insert:])
+        ok, _ = guard_future_import(old, fixed)
+        return fixed if ok else new
+
+    ok, why = guard_future_import(old, new)
+    if ok:
+        return new
+    if why != "future_import_moved":
+        return new
+
+    # Future imports present but displaced — relocate them
+    fut_set = set(fut_idx)
+    fut_lines = [_strip_bom_zw(new_lines[i]).lstrip() for i in fut_idx]
+    rest = [ln for j, ln in enumerate(new_lines) if j not in fut_set]
+
+    insert = _find_insert_point(rest)
+    fixed = "".join(rest[:insert] + fut_lines + rest[insert:])
+    ok2, _ = guard_future_import(old, fixed)
+    return fixed if ok2 else new
+
+
+def _has_control_chars(s: str) -> bool:
+    """Block ASCII control characters except common whitespace."""
+    for ch in s:
+        o = ord(ch)
+        if o < 32 and ch not in ("\n", "\r", "\t"):
+            return True
+    return False
 
 
 def _normalize_for_similarity(s: str) -> str:
@@ -159,17 +262,9 @@ def enforce_guards(*, relpath: str, instruction: str, old: str, new: str) -> tup
         return True, ""
 
     # 1) __future__
-    ok_fut, why_fut = _guard_future_import(old, new)
+    ok_fut, why_fut = guard_future_import(old, new)
     if not ok_fut:
-        head = "\n".join((new or "").splitlines()[:40])
-        print(
-            "[ShellGeist][guards] future import blocked:",
-            why_fut,
-            "\n--- NEW head ---\n",
-            head,
-            "\n--- end ---",
-            sep="",
-        )
+        _guard_trace(f"future import blocked: {why_fut}")
         return False, f"guard: {why_fut}"
 
     # 2) similarity + README special-case

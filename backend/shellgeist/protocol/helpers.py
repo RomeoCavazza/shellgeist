@@ -5,6 +5,22 @@ import re
 
 PROTOCOL_MARKDOWN_WITHOUT_TOOL = "ERROR: You provided code in markdown but NO <tool_use> tags. Use <tool_use> to execute."
 
+# Matches any tool XML block: <tool_use>, <tool_request>, <tool_call>, <tool>
+_TOOL_BLOCK_RE = re.compile(
+    r"<(?:tool_use|tool_request|tool_call|tool)\b[^>]*>.*?</(?:tool_use|tool_request|tool_call|tool[_a-z]*)>",
+    re.DOTALL | re.IGNORECASE,
+)
+# Matches hallucinated tool observation blocks
+_TOOL_OBS_RE = re.compile(
+    r"<tool_observation\b[^>]*>.*?</tool_observation>",
+    re.DOTALL | re.IGNORECASE,
+)
+# Also match unclosed tool tags (LLM sometimes doesn't close them)
+_TOOL_OPEN_UNCLOSED_RE = re.compile(
+    r"<(?:tool_use|tool_request|tool_call|tool)\b[^>]*>.*",
+    re.DOTALL | re.IGNORECASE,
+)
+
 
 def is_small_talk(text: str) -> bool:
     normalized = (text or "").strip().lower()
@@ -22,7 +38,8 @@ def is_small_talk(text: str) -> bool:
 
 def extract_canonical_response(text: str) -> str:
     content = str(text or "")
-    content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL | re.IGNORECASE)
+    content = _TOOL_BLOCK_RE.sub("", content)
+    content = _TOOL_OBS_RE.sub("", content)
     content = re.sub(r"^\s*Thoughts?:\s*.*?(?:\n\n|$)", "", content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r"^\s*Status:\s*DONE\s*$", "", content, flags=re.MULTILINE | re.IGNORECASE)
     content = content.strip()
@@ -32,7 +49,11 @@ def extract_canonical_response(text: str) -> str:
 def extract_actionable_thought(content: str, *, has_tool_calls: bool) -> str | None:
     if not has_tool_calls:
         return None
-    thought_match = re.search(r"Thoughts?:\s*(.*?)(?:\n\n|\n<tool_use|$)", content, re.DOTALL | re.IGNORECASE)
+    thought_match = re.search(
+        r"Thoughts?:\s*(.*?)(?:\n\n|\n<(?:tool_use|tool_request|tool_call|tool)\b|$)",
+        content,
+        re.DOTALL | re.IGNORECASE,
+    )
     if not thought_match:
         return None
     thought = thought_match.group(1).strip()
@@ -40,4 +61,11 @@ def extract_actionable_thought(content: str, *, has_tool_calls: bool) -> str | N
 
 
 def has_markdown_without_tool_calls(content: str, *, has_tool_calls: bool) -> bool:
-    return "```" in str(content or "") and not has_tool_calls
+    if has_tool_calls:
+        return False
+    text = str(content or "")
+    # Don't flag if content contains tool-like XML tags (parser may have failed
+    # but the LLM was *trying* to use tools — retry won't help)
+    if re.search(r"<(?:tool_use|tool_request|tool_call|tool)\b", text, re.IGNORECASE):
+        return False
+    return "```" in text

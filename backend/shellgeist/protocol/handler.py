@@ -1,7 +1,6 @@
 """RPC request handler: routes JSON commands to agent, tools, and session."""
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +9,7 @@ from pydantic import TypeAdapter, ValidationError
 from shellgeist.protocol.models import SGRequest, SGResult
 from shellgeist.safety.blocked import is_blocked
 from shellgeist.tools.coder import apply_edit, apply_full_replace, edit_plan
-from shellgeist.tools.shell import plan_shell
+from shellgeist.util_git import git
 
 
 def _resolve_root(root_str: str | None) -> Path:
@@ -22,20 +21,10 @@ def _resolve_root(root_str: str | None) -> Path:
     return p
 
 
-def _git(root: Path, args: list[str]) -> tuple[int, str]:
-    p = subprocess.run(
-        ['git', '-C', str(root), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    return p.returncode, p.stdout
-
-
 # Global cache for agents to avoid re-scanning and re-summarizing on every request
 _agent_cache: dict[str, Any] = {}
 
-async def handle_request(raw_req: dict, writer: Any | None = None) -> dict:
+async def handle_request(raw_req: dict, writer: Any | None = None, reader: Any | None = None) -> dict:
     try:
         req = TypeAdapter(SGRequest).validate_python(raw_req)
     except ValidationError as e:
@@ -51,7 +40,7 @@ async def handle_request(raw_req: dict, writer: Any | None = None) -> dict:
         # ---------------- git status ----------------
         if cmd == 'git_status':
             root = _resolve_root(req.root)
-            rc, out = _git(root, ['status', '--porcelain'])
+            rc, out = git(root, ['status', '--porcelain'])
             if rc != 0:
                 return SGResult(ok=True, data={"inside_git": False, "porcelain": []}).model_dump()
             lines = [ln for ln in (out or '').splitlines() if ln.strip()]
@@ -62,7 +51,7 @@ async def handle_request(raw_req: dict, writer: Any | None = None) -> dict:
             root = _resolve_root(req.root)
             if not req.file:
                 raise ValueError("missing_file")
-            rc, out = _git(root, ['add', '--', req.file])
+            rc, out = git(root, ['add', '--', req.file])
             if rc != 0:
                 return SGResult(ok=False, error='git_add_failed', detail=(out or '')[:8000]).model_dump()
             return SGResult(ok=True, data={"file": req.file, "staged": True}).model_dump()
@@ -71,7 +60,7 @@ async def handle_request(raw_req: dict, writer: Any | None = None) -> dict:
             root = _resolve_root(req.root)
             if not req.file:
                 raise ValueError("missing_file")
-            rc, out = _git(root, ['restore', '--', req.file])
+            rc, out = git(root, ['restore', '--', req.file])
             if rc != 0:
                 return SGResult(ok=False, error='git_restore_failed', detail=(out or '')[:8000]).model_dump()
             return SGResult(ok=True, data={"file": req.file, "restored": True}).model_dump()
@@ -88,13 +77,8 @@ async def handle_request(raw_req: dict, writer: Any | None = None) -> dict:
             ]}).model_dump()
 
         if cmd == 'shell':
-            root = _resolve_root(req.root)
-            if not req.task:
-                raise ValueError("missing_task")
-            commands = plan_shell(req.task, root=root)
-            blocked = [c for c in commands if is_blocked(c)]
-            allowed = [c for c in commands if not is_blocked(c)]
-            return SGResult(ok=True, data={"commands": allowed, "blocked": blocked}).model_dump()
+            # Legacy stub — shell planning is handled by the agent loop now.
+            return SGResult(ok=False, error='deprecated_use_agent_task').model_dump()
 
         if cmd == 'chat':
             text = (req.text or "").strip()
@@ -115,7 +99,7 @@ async def handle_request(raw_req: dict, writer: Any | None = None) -> dict:
             if not req.instruction:
                 raise ValueError("missing_instruction")
             out = edit_plan(req.file, req.instruction, root=root)
-            return SGResult(ok=True, data=out).model_dump()
+            return SGResult(ok=True, data=out.to_dict()).model_dump()
 
         # ---------------- edit apply (patch) ----------------
         if cmd == 'edit_apply':
@@ -166,7 +150,7 @@ async def handle_request(raw_req: dict, writer: Any | None = None) -> dict:
                 agent = Agent(root=str(root))
                 _agent_cache[session_id] = agent
 
-            res = await agent.run_task(req.goal, writer=writer, session_id=session_id)
+            res = await agent.run_task(req.goal, writer=writer, session_id=session_id, mode=req.mode, reader=reader)
             return SGResult(ok=res["ok"], data=res).model_dump()
 
         if cmd == "get_history":

@@ -1,25 +1,23 @@
-"""Filesystem tools: read_file, write_file, list_files, get_repo_map."""
+"""Filesystem tools: read_file, write_file, list_files, find_files, get_repo_map."""
 from __future__ import annotations
 
 import difflib
+import fnmatch
 import os
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from shellgeist.tools.base import registry
+from shellgeist.util_path import resolve_repo_path
 
 
-def _resolve_repo_path(root: str, rel: str) -> Path:
-    root_path = Path(root).resolve()
-    if not rel:
-        raise ValueError("invalid_path")
-    p = (root_path / rel).resolve()
-    try:
-        p.relative_to(root_path)
-    except ValueError:
-        raise ValueError("path_escape")
-    return p
+# Directories always excluded from recursive listings / searches
+_IGNORED_DIRS = frozenset({
+    ".git", "__pycache__", "node_modules", ".venv", "venv",
+    ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
+    "dist", "build", ".eggs", "target",
+})
 
 
 class ReadFileInput(BaseModel):
@@ -28,6 +26,8 @@ class ReadFileInput(BaseModel):
 
 class ListFilesInput(BaseModel):
     directory: str = "."
+    recursive: bool = False
+    depth: int = 3
 
 
 @registry.register(
@@ -36,7 +36,7 @@ class ListFilesInput(BaseModel):
 )
 def read_file(path: str | None = None, root: str = "", file_path: str | None = None, file: str | None = None) -> str:
     target = (path or file or file_path or "").strip()
-    p = _resolve_repo_path(root, target)
+    p = resolve_repo_path(Path(root), target)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {target}")
     return p.read_text(encoding="utf-8", errors="replace")
@@ -56,16 +56,21 @@ def get_repo_map(root: str) -> str:
     """
     out = []
     p_root = Path(root)
-    for p in sorted(p_root.rglob("*")):
-        if any(part.startswith(".") for part in p.parts):
-            continue
-        rel = p.relative_to(p_root)
-        depth = len(rel.parts) - 1
+    for dirpath, dirnames, filenames in os.walk(p_root):
+        # Prune hidden and ignored dirs in-place
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if not d.startswith(".") and d not in _IGNORED_DIRS
+        )
+        rel_dir = os.path.relpath(dirpath, p_root)
+        depth = 0 if rel_dir == "." else rel_dir.count(os.sep) + 1
         indent = "  " * depth
-        if p.is_dir():
-            out.append(f"{indent}{rel.name}/")
-        else:
-            out.append(f"{indent}{rel.name}")
+        if rel_dir != ".":
+            out.append(f"{indent}{os.path.basename(dirpath)}/")
+        for f in sorted(filenames):
+            if f.startswith("."):
+                continue
+            out.append(f"{indent}  {f}")
     return "\n".join(out)
 
 
@@ -78,9 +83,9 @@ class WriteFileInput(BaseModel):
     description="Write content to a file. Overwrites if exists. Returns a unified diff when modifying an existing file.",
     input_model=WriteFileInput
 )
-def write_file(path: str | None = None, content: str = "", root: str = "", file_path: str | None = None) -> str:
-    target = (path or file_path or "").strip()
-    p = _resolve_repo_path(root, target)
+def write_file(path: str | None = None, content: str = "", root: str = "", file_path: str | None = None, file: str | None = None) -> str:
+    target = (path or file_path or file or "").strip()
+    p = resolve_repo_path(Path(root), target)
     p.parent.mkdir(parents=True, exist_ok=True)
 
     # Capture old content for diff
@@ -111,18 +116,88 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
 
 
 @registry.register(
-    description="List files in a directory.",
+    description="List files and directories. Set recursive=true to show the full tree. Set depth to limit recursion (default 3).",
     input_model=ListFilesInput
 )
-def list_files(directory: str, root: str) -> list[str]:
-    p = _resolve_repo_path(root, directory)
+def list_files(directory: str = ".", root: str = "", recursive: bool = False, depth: int = 3) -> list[str]:
+    p = resolve_repo_path(Path(root), directory)
     if not p.exists() or not p.is_dir():
         raise FileNotFoundError(f"Directory not found: {directory}")
 
-    items = []
-    for entry in os.scandir(p):
-        if entry.name.startswith("."):
-            continue
-        rel = os.path.relpath(entry.path, root)
-        items.append(rel)
+    # Use the resolved directory as base for relative paths
+    base = str(p)
+    items: list[str] = []
+
+    if recursive:
+        def _walk(dir_path: Path, current_depth: int) -> None:
+            if current_depth > depth:
+                return
+            try:
+                entries = sorted(os.scandir(dir_path), key=lambda e: e.name)
+            except PermissionError:
+                return
+            for entry in entries:
+                if entry.name.startswith(".") or entry.name in _IGNORED_DIRS:
+                    continue
+                rel = os.path.relpath(entry.path, base)
+                if entry.is_dir():
+                    items.append(rel + "/")
+                    _walk(Path(entry.path), current_depth + 1)
+                else:
+                    items.append(rel)
+        _walk(p, 1)
+    else:
+        for entry in os.scandir(p):
+            if entry.name.startswith("."):
+                continue
+            rel = os.path.relpath(entry.path, base)
+            items.append(rel + "/" if entry.is_dir() else rel)
+
     return sorted(items)
+
+
+class FindFilesInput(BaseModel):
+    pattern: str
+    directory: str = "."
+
+
+@registry.register(
+    description=(
+        "Search for files matching a glob pattern (e.g. '*.lua', 'dashboard*', '**/*.py') "
+        "recursively from the given directory. Returns matching relative paths. "
+        "Use this when you need to locate a file by name."
+    ),
+    input_model=FindFilesInput
+)
+def find_files(pattern: str, directory: str = ".", root: str = "", max_results: int = 50) -> str | list[str]:
+    p = resolve_repo_path(Path(root), directory)
+    if not p.exists() or not p.is_dir():
+        raise FileNotFoundError(f"Directory not found: {directory}")
+
+    results: list[str] = []
+    base = str(p)
+
+    for dirpath, dirnames, filenames in os.walk(p):
+        # Prune ignored directories in-place
+        dirnames[:] = [
+            d for d in dirnames
+            if not d.startswith(".") and d not in _IGNORED_DIRS
+        ]
+        for filename in filenames:
+            if filename.startswith("."):
+                continue
+            rel = os.path.relpath(os.path.join(dirpath, filename), base)
+            if fnmatch.fnmatch(filename, pattern) or fnmatch.fnmatch(rel, pattern):
+                results.append(rel)
+                if len(results) >= max_results:
+                    return sorted(results)
+
+    if not results:
+        # Extract just the filename from complex patterns to suggest a broader search
+        base_name = pattern.rsplit("/", 1)[-1] if "/" in pattern else pattern
+        hint = ""
+        if base_name != pattern:
+            hint = f" Try a simpler pattern like '{base_name}' to search more broadly."
+        return f"No files matching '{pattern}' in {directory}.{hint}"
+
+    return sorted(results)

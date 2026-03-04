@@ -36,8 +36,6 @@ async def _run_agent_chat(goal: str) -> int:
     writer.write((json.dumps(payload) + "\n").encode())
     await writer.drain()
 
-    prefer_v5 = False
-
     def _print_event(event: dict[str, Any]) -> None:
         channel = str(event.get("channel", ""))
         content = str(event.get("content", ""))
@@ -73,25 +71,11 @@ async def _run_agent_chat(goal: str) -> int:
                 break
             ev = json.loads(line)
             if ev["type"] == "execution_event":
-                prefer_v5 = True
                 event = ev.get("event")
                 if isinstance(event, dict):
                     _print_event(event)
                 continue
-            if prefer_v5 and ev["type"] in {"log", "status"}:
-                continue
-            if ev["type"] == "log":
-                log_type = ev.get("log_type", "info")
-                content = ev["content"]
-                if log_type == "thought":
-                    print(f"\033[90mThinking: {content}\033[0m")
-                elif log_type == "action":
-                    print(f"\033[32mAction: {content}\033[0m")
-                elif log_type == "observation":
-                    print(f"Observation: {content}")
-                else:
-                    print(content)
-            elif ev["type"] == "result":
+            if ev["type"] == "result":
                 if ev["ok"]:
                     print("\033[36mGoal achieved!\033[0m")
                 else:
@@ -152,8 +136,9 @@ def cmd_edit_plan(args: argparse.Namespace) -> int:
 
     root = Path(args.root).resolve() if args.root else Path.cwd()
     result = edit_plan(args.file, args.instruction, root=root)
-    _jprint(result)
-    return 0 if result.get("ok") else 1
+    d = result.to_dict()
+    _jprint(d)
+    return 0 if d.get("ok") else 1
 
 
 def cmd_ping(args: argparse.Namespace) -> int:
@@ -234,10 +219,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("version", help="Print version")
     sp.set_defaults(fn=cmd_version)
 
-    # Legacy: `shellgeist <goal>` without subcommand
-    p.add_argument("legacy_goal", nargs="?", help=argparse.SUPPRESS)
-    p.add_argument("--daemon", action="store_true", help=argparse.SUPPRESS)
-
     return p
 
 
@@ -250,11 +231,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_version(args)
 
     if not args.cmd:
-        # Legacy fallback: `shellgeist --daemon` or `shellgeist "do something"`
-        if getattr(args, "daemon", False):
-            return cmd_daemon(args)
-        if getattr(args, "legacy_goal", None):
-            return asyncio.run(_run_agent_chat(args.legacy_goal))
         parser.print_help()
         return 0
 

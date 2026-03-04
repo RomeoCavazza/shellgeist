@@ -34,7 +34,7 @@ async def client_handler(
                 continue
 
             try:
-                resp = await handle_request(req, writer=writer)
+                resp = await handle_request(req, writer=writer, reader=reader)
                 send_json(writer, resp)
             except Exception as e:
                 send_json(writer, {

@@ -58,9 +58,21 @@ export SHELLGEIST_HTTP_TIMEOUT=600           # For slow/large models
 
 | Command | Description |
 |---------|-------------|
-| `<leader>as` | Toggle the Modern Chat Sidebar (Nui) |
-| `<leader>ag` | Direct Prompt (Floating Input) |
 | `:SGAgent <goal>` | Start an autonomous task |
+| `:SGAgent` | Open sidebar (no goal = chat mode) |
+| `:SGSidebar` | Toggle the chat sidebar |
+| `:SGEdit <file> <instruction>` | Single-file edit via LLM |
+| `:SGReview [file]` | Review git changes (inline conflict view) |
+| `:SGStatus` | Show `git status` |
+| `:SGDiagnostic` | Print daemon / env diagnostic info |
+| `:SGPing` | Ping daemon health-check |
+
+Default keymaps (set in your config):
+
+| Keymap | Description |
+|--------|-------------|
+| `<leader>as` | Toggle sidebar |
+| `<leader>ag` | Direct prompt (floating input) |
 
 ## 🛡️ Guardrails
 
@@ -72,9 +84,18 @@ ShellGeist includes "Crisis-Proof" safety:
 
 ## 🏗️ Architecture
 
-- **Backend** (Python/Asyncio): Tool-calling engine and SQLite history.
-- **Frontend** (Lua/Nui): Professional sidebar with real-time thought streaming.
-- **CLI Wrapper**: Binary that handles Nix/Python environments automatically.
+```
+Neovim (Lua)  ←─ Unix socket ─→  Daemon (Python/Asyncio)  ──→  Ollama / OpenAI
+  sidebar.lua                       handler.py → Agent loop
+  conflict.lua (review)             → tools (edit, shell, fs)
+  rpc.lua (client)                  → SQLite history
+```
+
+- **14 registered tools**: `read_file`, `write_file`, `edit_file`, `run_shell`, PTY sessions, `run_nix_python`, …
+- **Review mode**: hunk-level accept/reject before writing (avante-style inline conflict view)
+- **Safety**: command blocklist, loop guard, retry engine, `__future__` import protection, atomic writes
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full protocol reference (RPC commands, streaming events, env vars).
 
 ---
 *Built for developers who want a local, free, and powerful AI teammate.*

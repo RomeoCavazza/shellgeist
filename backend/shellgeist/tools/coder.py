@@ -4,24 +4,83 @@ from __future__ import annotations
 import difflib
 import os
 import re
-import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
 
 from shellgeist.diff.apply import PatchApplyError, apply_unified_diff
-from shellgeist.diff.guards import enforce_guards
+from shellgeist.diff.guards import autofix_future_import, enforce_guards, guard_future_import
 from shellgeist.llm.client import get_client
 from shellgeist.tools.base import registry
+from shellgeist.tools.normalize import (
+    maybe_unescape_llm_string,
+    salvage_fulltext,
+    strip_fences,
+)
+from shellgeist.util_git import git
 from shellgeist.util_json import loads_obj
+from shellgeist.util_path import resolve_repo_path
 
 
 class EditFileInput(BaseModel):
+    """Pydantic model for the ``edit_file`` tool input."""
     path: str
     instruction: str
+
+
+# =============================================================================
+# EDIT RESULT — typed return value replacing raw dicts
+# =============================================================================
+
+@dataclass
+class EditResult:
+    """Structured result for all edit operations.
+
+    This replaces the raw ``dict`` returns throughout the edit pipeline,
+    making success/failure handling explicit and IDE-friendly.
+    """
+    ok: bool
+    file: str = ""
+    error: str = ""
+    detail: str = ""
+    patch: str = ""
+    diff: str = ""
+    written: bool = False
+    staged: bool = False
+    old_content: str = ""
+    new_content: str = ""
+
+    def to_dict(self, *, include_content: bool = False) -> dict[str, Any]:
+        """Serialize to the dict format the RPC layer expects.
+
+        When *include_content* is True (review mode), ``old_content`` and
+        ``new_content`` are included so the frontend can display inline diffs.
+        """
+        d: dict[str, Any] = {"ok": self.ok}
+        if self.ok:
+            if self.file:
+                d["file"] = self.file
+            if self.patch:
+                d["patch"] = self.patch
+            if self.diff:
+                d["diff"] = self.diff
+            d["written"] = self.written
+            if self.staged:
+                d["staged"] = self.staged
+            if include_content:
+                d["old_content"] = self.old_content
+                d["new_content"] = self.new_content
+        else:
+            if self.error:
+                d["error"] = self.error
+            if self.detail:
+                d["detail"] = self.detail
+            if self.patch:
+                d["patch"] = self.patch
+        return d
 
 # =============================================================================
 # TRACE
@@ -41,145 +100,6 @@ def _head_repr(s: str, n: int = 40) -> str:
     for i, ln in enumerate(lines[:n], start=1):
         out.append(f"{i:02d}: {ln!r}")
     return "\n".join(out)
-
-
-# =============================================================================
-# PATH SAFETY
-# =============================================================================
-
-def _resolve_repo_path(root: Path, rel: str) -> Path:
-    if not rel or rel.startswith(("/", "~")):
-        raise ValueError("invalid_path")
-    p = (root / rel).resolve()
-    try:
-        p.relative_to(root.resolve())
-    except ValueError:
-        raise ValueError("path_escape")
-    return p
-
-
-# =============================================================================
-# LLM STRING AUTO-UNESCAPE
-# =============================================================================
-
-def _maybe_unescape_llm_string(s: str) -> str:
-    """
-    Some models double-escape JSON string payloads, so fields arrive with literal "\\n".
-    If it looks like that, unescape common sequences.
-    """
-    if not isinstance(s, str) or not s:
-        return s
-
-    # Heuristic: if we see \\n but no real newlines, it's probably double-escaped.
-    if "\\n" in s and "\n" not in s:
-        s2 = s
-        s2 = s2.replace("\\r\\n", "\n")
-        s2 = s2.replace("\\n", "\n")
-        s2 = s2.replace("\\r", "\r")
-        s2 = s2.replace("\\t", "\t")
-        s2 = s2.replace('\\"', '"').replace("\\'", "'")
-        s2 = s2.replace("\\\\", "\\")
-        return s2
-
-    return s
-
-
-def _strip_fences(s: str) -> str:
-    s = (s or "").strip()
-    if not s:
-        return s
-    if s.startswith("```"):
-        lines = s.splitlines()
-        if lines and lines[0].lstrip().startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].lstrip().startswith("```"):
-            lines = lines[:-1]
-        s = "\n".join(lines).strip()
-    return s
-
-
-# =============================================================================
-# FULLTEXT SALVAGE (broken JSON -> extract "content")
-# =============================================================================
-
-_CONTENT_FIELD_RE = re.compile(
-    r'"content"\s*:\s*"(?P<body>(?:\\.|[^"\\])*)"\s*[}\]]?\s*$',
-    re.DOTALL,
-)
-
-
-def _unescape_json_string_fragment(s: str) -> str:
-    """
-    Best-effort unescape for a JSON string fragment (no surrounding quotes).
-    Handles common escapes enough for our 'content' salvage path.
-    """
-    if not isinstance(s, str):
-        return ""
-    s = s.replace("\\r\\n", "\n")
-    s = s.replace("\\n", "\n")
-    s = s.replace("\\r", "\r")
-    s = s.replace("\\t", "\t")
-    s = s.replace('\\"', '"')
-    s = s.replace("\\/", "/")
-    s = s.replace("\\\\", "\\")
-    return s
-
-
-def _extract_fulltext_content_salvage(raw: str) -> str | None:
-    """
-    When model returns broken JSON like:
-      { "content": "....   (missing closing braces/quotes)
-    try to salvage the content field anyway.
-    """
-    if not isinstance(raw, str) or not raw:
-        return None
-
-    txt = raw.strip()
-
-    m = _CONTENT_FIELD_RE.search(txt)
-    if m:
-        body = m.group("body")
-        return _unescape_json_string_fragment(body)
-
-    needle = '"content": "'
-    j = txt.find(needle)
-    if j != -1:
-        frag = txt[j + len(needle):]
-        k = frag.rfind('"')
-        if k > 0:
-            body = frag[:k]
-            return _unescape_json_string_fragment(body)
-
-    return None
-
-
-def _salvage_broken_content_envelope(raw: str) -> str | None:
-    """
-    Salvage responses shaped like:
-      {
-      "content": "
-      <python code...>
-      "
-    }
-    which is invalid JSON because of raw newlines.
-    """
-    if not isinstance(raw, str):
-        return None
-
-    lines = raw.splitlines()
-    if len(lines) < 3:
-        return None
-
-    if lines[0].strip() != "{":
-        return None
-    if not lines[1].lstrip().startswith('"content": "'):
-        return None
-
-    body = lines[2:]
-    while body and body[-1].strip() in ('"', '"}', '"},', "}", "},"):
-        body = body[:-1]
-
-    return "\n".join(body).lstrip("\n")
 
 
 # =============================================================================
@@ -392,170 +312,7 @@ def _make_patch_from_fulltext(path: str, old: str, new: str) -> str:
 
 
 # =============================================================================
-# __future__ GUARD (NO LITERAL TRIPLE QUOTES)
-# =============================================================================
-
-_TRIPLE_DQ = '"' * 3
-_TRIPLE_SQ = "'" * 3
-_BOM_ZW = "\ufeff\u200b"
-
-
-def _strip_bom_zw(s: str) -> str:
-    return (s or "").lstrip(_BOM_ZW)
-
-
-def _is_effectively_blank(s: str) -> bool:
-    return _strip_bom_zw(s).strip() == ""
-
-
-def _future_import_guard(old: str, new: str) -> tuple[bool, str]:
-    old_lines = (old or "").splitlines()
-    if not any(l.lstrip().startswith("from __future__ import") for l in old_lines):
-        return True, ""
-
-    new_text = new or ""
-    new_lines = new_text.splitlines()
-
-    new_future_idxs = [
-        idx for idx, ln in enumerate(new_lines)
-        if _strip_bom_zw(ln).lstrip().startswith("from __future__ import")
-    ]
-    if not new_future_idxs:
-        return False, "future_import_removed"
-
-    i = 0
-    while i < len(new_lines):
-        s = new_lines[i]
-        if _is_effectively_blank(s):
-            i += 1
-            continue
-        if _strip_bom_zw(s).lstrip().startswith("#"):
-            i += 1
-            continue
-        break
-
-    if i < len(new_lines):
-        s0 = _strip_bom_zw(new_lines[i]).lstrip()
-        if s0.startswith(_TRIPLE_DQ) or s0.startswith(_TRIPLE_SQ):
-            q = _TRIPLE_DQ if s0.startswith(_TRIPLE_DQ) else _TRIPLE_SQ
-            if s0.count(q) >= 2:
-                i += 1
-            else:
-                i += 1
-                while i < len(new_lines):
-                    if q in new_lines[i]:
-                        i += 1
-                        break
-                    i += 1
-
-    while i < len(new_lines) and _is_effectively_blank(new_lines[i]):
-        i += 1
-
-    ok = i < len(new_lines) and _strip_bom_zw(new_lines[i]).lstrip().startswith("from __future__ import")
-    if not ok:
-        first_idx = new_future_idxs[0]
-        _trace(
-            "future_import_guard BLOCKED: future_import_moved "
-            f"(expected at top, found first at line {first_idx+1})\n"
-            f"--- NEW head (repr) ---\n{_head_repr(new_text)}\n--- end ---"
-        )
-        return False, "future_import_moved"
-
-    return True, ""
-
-
-def _autofix_future_import(old: str, new: str) -> str:
-    old_lines = (old or "").splitlines(keepends=True)
-    old_future = [
-        _strip_bom_zw(ln).lstrip()
-        for ln in old_lines
-        if _strip_bom_zw(ln).lstrip().startswith("from __future__ import")
-    ]
-    if not old_future:
-        return new
-
-    new_lines = (new or "").splitlines(keepends=True)
-    if not new_lines:
-        return new
-
-    fut_idx = [
-        i for i, ln in enumerate(new_lines)
-        if _strip_bom_zw(ln).lstrip().startswith("from __future__ import")
-    ]
-
-    if not fut_idx:
-        rest = new_lines
-        i = 0
-        while i < len(rest):
-            s = rest[i]
-            if _is_effectively_blank(s):
-                i += 1
-                continue
-            if _strip_bom_zw(s).lstrip().startswith("#"):
-                i += 1
-                continue
-            break
-
-        if i < len(rest):
-            s0 = _strip_bom_zw(rest[i]).lstrip()
-            if s0.startswith(_TRIPLE_DQ) or s0.startswith(_TRIPLE_SQ):
-                q = _TRIPLE_DQ if s0.startswith(_TRIPLE_DQ) else _TRIPLE_SQ
-                if s0.count(q) >= 2:
-                    i += 1
-                else:
-                    i += 1
-                    while i < len(rest):
-                        if q in rest[i]:
-                            i += 1
-                            break
-                        i += 1
-
-        fixed = "".join(rest[:i] + old_future + rest[i:])
-        ok2, _ = _future_import_guard(old, fixed)
-        return fixed if ok2 else new
-
-    ok, why = _future_import_guard(old, new)
-    if ok:
-        return new
-    if why != "future_import_moved":
-        return new
-
-    fut_set = set(fut_idx)
-    fut_lines = [_strip_bom_zw(new_lines[i]).lstrip() for i in fut_idx]
-    rest = [ln for j, ln in enumerate(new_lines) if j not in fut_set]
-
-    i = 0
-    while i < len(rest):
-        s = rest[i]
-        if _is_effectively_blank(s):
-            i += 1
-            continue
-        if _strip_bom_zw(s).lstrip().startswith("#"):
-            i += 1
-            continue
-        break
-
-    if i < len(rest):
-        s0 = _strip_bom_zw(rest[i]).lstrip()
-        if s0.startswith(_TRIPLE_DQ) or s0.startswith(_TRIPLE_SQ):
-            q = _TRIPLE_DQ if s0.startswith(_TRIPLE_DQ) else _TRIPLE_SQ
-            if s0.count(q) >= 2:
-                i += 1
-            else:
-                i += 1
-                while i < len(rest):
-                    if q in rest[i]:
-                        i += 1
-                        break
-                    i += 1
-
-    fixed = "".join(rest[:i] + fut_lines + rest[i:])
-    ok2, _ = _future_import_guard(old, fixed)
-    return fixed if ok2 else new
-
-
-# =============================================================================
-# FILE I/O + GIT
+# FILE I/O
 # =============================================================================
 
 def _py_syntax_ok(path: str, content: str) -> bool:
@@ -583,70 +340,58 @@ def _atomic_write_text(path: Path, content: str) -> None:
             pass
 
 
-def _backup_file(path: Path) -> None:
-    bak = path.with_suffix(path.suffix + ".shellgeist.bak")
-    try:
-        bak.write_text(path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _git(root: Path, args: list[str]) -> tuple[int, str]:
-    p = subprocess.run(
-        ["git", "-C", str(root), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    return p.returncode, p.stdout
-
-
 # =============================================================================
 # FINALIZER
 # =============================================================================
 
-def _finalize_ok(path: str, instruction: str, old: str, new: str, patch: str, root: Path) -> dict:
-    new2 = _autofix_future_import(old, new)
+def _finalize_ok(
+    path: str, instruction: str, old: str, new: str, patch: str, root: Path,
+    *, review_mode: bool = False,
+) -> EditResult:
+    """Run guards, autofix, and write the file atomically.
+
+    When *review_mode* is ``True``, guards and autofix still run but the
+    file is **not** written to disk.  Instead ``old_content`` and
+    ``new_content`` are populated so the frontend can show an inline diff.
+    """
+    new2 = autofix_future_import(old, new)
 
     if not _py_syntax_ok(path, new2):
-        okf, whyf = _future_import_guard(old, new2)
+        okf, whyf = guard_future_import(old, new2)
         if not okf:
             _trace(f"guard_blocked(finalize): {whyf}")
-            return {"ok": False, "error": "guard_blocked", "detail": whyf, "patch": patch}
+            return EditResult(ok=False, error="guard_blocked", detail=whyf, patch=patch)
 
         _trace(
             "guard_blocked(finalize): syntax_error_after_edit\n"
             f"--- NEW head (repr) ---\n{_head_repr(new2)}\n--- end ---"
         )
-        return {"ok": False, "error": "guard_blocked", "detail": "syntax_error_after_edit", "patch": patch}
+        return EditResult(ok=False, error="guard_blocked", detail="syntax_error_after_edit", patch=patch)
 
     ok, why = enforce_guards(relpath=path, instruction=instruction, old=old, new=new2)
     if not ok:
         _trace(f"guard_blocked(finalize): {why}")
-        return {"ok": False, "error": "guard_blocked", "detail": why, "patch": patch}
-
-    # ACTUALLY WRITE THE FILE (MVP Empowerment)
-    file_path = _resolve_repo_path(root, path)
-    _atomic_write_text(file_path, new2)
+        return EditResult(ok=False, error="guard_blocked", detail=why, patch=patch)
 
     # If we changed the content (new -> new2), patch must match new2.
     if new2 != new:
         patch2 = _make_patch_from_fulltext(path, old, new2)
-        return {
-            "ok": True,
-            "file": path,
-            "patch": patch2,
-            "diff": _ensure_display_diff(path, patch2),
-            "written": True,
-        }
+        display = _ensure_display_diff(path, patch2)
+    else:
+        patch2 = patch
+        display = _ensure_display_diff(path, patch)
 
-    return {
-        "ok": True,
-        "file": path,
-        "patch": patch,
-        "diff": _ensure_display_diff(path, patch),
-        "written": True,
-    }
+    if review_mode:
+        # Don't write — return old/new for frontend-side hunk review.
+        return EditResult(
+            ok=True, file=path, patch=patch2, diff=display,
+            written=False, old_content=old, new_content=new2,
+        )
+
+    # ACTUALLY WRITE THE FILE (MVP Empowerment)
+    file_path = resolve_repo_path(root, path)
+    _atomic_write_text(file_path, new2)
+    return EditResult(ok=True, file=path, patch=patch2, diff=display, written=True)
 
 
 # =============================================================================
@@ -661,7 +406,9 @@ def _fulltext_fallback(
     reason: str,
     cache: dict[str, _ModelCtx],
     root: Path,
-) -> dict:
+    review_mode: bool = False,
+) -> EditResult:
+    """Last-resort strategy: ask LLM for complete file content instead of a diff."""
     system, user = _build_fulltext_prompts(path, instruction, old, repair=reason)
     raw, _ = _call_model(model_type="smart", system=system, user=user, cache=cache)
 
@@ -670,37 +417,27 @@ def _fulltext_fallback(
         data = loads_obj(raw)
         v = data.get("content")
         if isinstance(v, str):
-            new = v
+            new = maybe_unescape_llm_string(v)
         else:
             raise ValueError("missing_content")
     except Exception as e:
         _trace(f"bad_json_fulltext => raw fallback: {e}")
+        new = salvage_fulltext(raw)
 
-        salv1 = _extract_fulltext_content_salvage(raw)
-        if isinstance(salv1, str) and salv1.strip():
-            new = salv1
-        else:
-            salv2 = _salvage_broken_content_envelope(raw)
-            if isinstance(salv2, str) and salv2.strip():
-                new = salv2
-            else:
-                new = _strip_fences(raw)
-
-    new = _maybe_unescape_llm_string(new)
-    new = _autofix_future_import(old, new)
+    new = autofix_future_import(old, new)
 
     if not _py_syntax_ok(path, new):
-        okf, whyf = _future_import_guard(old, new)
+        okf, whyf = guard_future_import(old, new)
         if not okf:
-            return {"ok": False, "error": "guard_blocked", "detail": whyf}
+            return EditResult(ok=False, error="guard_blocked", detail=whyf)
 
         _trace(
             "guard_blocked(fulltext_fallback): syntax_error_after_edit\n"
             f"--- NEW head (repr) ---\n{_head_repr(new)}\n--- end ---"
         )
-        return {"ok": False, "error": "guard_blocked", "detail": "syntax_error_after_edit"}
+        return EditResult(ok=False, error="guard_blocked", detail="syntax_error_after_edit")
 
-    ok_future, why_future = _future_import_guard(old, new)
+    ok_future, why_future = guard_future_import(old, new)
     patch = _make_patch_from_fulltext(path, old, new)
 
     if not ok_future:
@@ -708,9 +445,9 @@ def _fulltext_fallback(
             "future_import_guard BLOCKED (fulltext_fallback): "
             f"{why_future}\n--- NEW head (repr) ---\n{_head_repr(new)}\n--- end ---"
         )
-        return {"ok": False, "error": "guard_blocked", "detail": why_future, "patch": patch}
+        return EditResult(ok=False, error="guard_blocked", detail=why_future, patch=patch)
 
-    return _finalize_ok(path, instruction, old, new, patch, root)
+    return _finalize_ok(path, instruction, old, new, patch, root, review_mode=review_mode)
 
 
 # =============================================================================
@@ -726,150 +463,162 @@ def edit_file(
     instruction: str = "",
     root: str = "",
     file_path: str | None = None,
+    file: str | None = None,
+    review_mode: bool = False,
 ) -> dict:
+    """Agent-facing tool for editing files.
+
+    Wraps ``edit_plan`` to handle the root ``Path`` conversion and
+    return the ``dict`` format expected by the RPC layer.
+
+    When *review_mode* is ``True``, the file is **not** written;
+    the result includes ``old_content`` and ``new_content`` for
+    frontend-side hunk-level review.
     """
-    Agent-facing tool for editing files.
-    Wraps edit_plan to handle the root Path conversion.
-    """
-    target = (path or file_path or "").strip()
-    return edit_plan(target, instruction, root=Path(root))
+    target = (path or file_path or file or "").strip()
+    result = edit_plan(target, instruction, root=Path(root), review_mode=review_mode)
+    return result.to_dict(include_content=review_mode)
 
 
-def edit_plan(path: str, instruction: str, *, root: Path) -> dict:
-    file_path = _resolve_repo_path(root, path)
+# ---------------------------------------------------------------------------
+# Diff extraction helper (parse LLM raw → normalised diff string)
+# ---------------------------------------------------------------------------
+
+def _parse_diff_from_raw(raw: str, *, tag: str = "?") -> str:
+    """Extract and normalise a unified diff from raw LLM output.
+
+    Returns a normalised diff string, or ``""`` if nothing usable was found.
+    """
+    diff = ""
+    try:
+        data = loads_obj(raw)
+        diff = _normalize_unified_diff(maybe_unescape_llm_string(data.get("diff", "")))
+    except Exception as e:
+        _trace(f"bad_json({tag}): {e}")
+
+    if "@@" not in diff:
+        salvage = _extract_diff_fallback(raw)
+        if salvage:
+            diff = salvage
+
+    return diff
+
+
+# ---------------------------------------------------------------------------
+# Single "try diff → apply → guard-repair" attempt
+# ---------------------------------------------------------------------------
+
+def _try_diff_attempt(
+    path: str,
+    instruction: str,
+    old: str,
+    diff: str,
+    *,
+    cache: dict[str, _ModelCtx],
+    root: Path,
+    tag: str = "1",
+    review_mode: bool = False,
+) -> EditResult | None:
+    """Try to apply *diff* and finalize.  On guard failure, attempt one LLM repair.
+
+    Returns an ``EditResult`` on success or terminal guard block, or ``None``
+    if the diff could not be applied at all (``PatchApplyError``).
+    """
+    try:
+        new = apply_unified_diff(old, diff)
+    except PatchApplyError as e:
+        _trace(f"patch_apply_failed({tag}): {e}")
+        return None  # caller should try next strategy
+
+    result = _finalize_ok(path, instruction, old, new, diff, root, review_mode=review_mode)
+    if result.ok:
+        return result
+
+    # Guard failed — try one LLM repair round
+    detail = result.detail
+    if "rewrite too violent" in detail:
+        return result  # terminal — repair won't help
+
+    repair_hint = _repair_hint_for_detail(detail)
+    sys_r, usr_r = _build_prompts(path, instruction, old, repair=repair_hint)
+    raw_r, _ = _call_model(model_type="smart", system=sys_r, user=usr_r, cache=cache)
+    diff_r = _parse_diff_from_raw(raw_r, tag=f"guard-repair-{tag}")
+
+    if "@@" in diff_r:
+        try:
+            new_r = apply_unified_diff(old, diff_r)
+            result_r = _finalize_ok(path, instruction, old, new_r, diff_r, root, review_mode=review_mode)
+            if result_r.ok:
+                return result_r
+        except PatchApplyError as e2:
+            _trace(f"patch_apply_failed(guard-repair-{tag}): {e2}")
+
+    return result  # return the original guard-blocked result
+
+
+# ---------------------------------------------------------------------------
+# Main edit pipeline
+# ---------------------------------------------------------------------------
+
+def edit_plan(path: str, instruction: str, *, root: Path, review_mode: bool = False) -> EditResult:
+    """Plan and apply an edit to *path* using the LLM.
+
+    Pipeline:
+      1. Ask LLM for a unified diff, try to apply it.
+      2. On ``PatchApplyError``, ask LLM again with the error message.
+      3. If both diff attempts fail, fall back to full-text rewrite.
+
+    Each diff attempt includes an automatic guard-repair sub-attempt if
+    guards reject the result (e.g. \"rewrite too violent\").
+
+    When *review_mode* is ``True``, guards still run but no file is
+    written — ``EditResult.old_content`` / ``new_content`` are populated
+    instead.
+    """
+    file_path = resolve_repo_path(root, path)
     if not file_path.exists():
-        # Support creating new files
         old = ""
     else:
         old = file_path.read_text(encoding="utf-8", errors="replace")
 
     cache: dict[str, _ModelCtx] = {}
 
-    system1, user1 = _build_prompts(path, instruction, old)
-    raw1, _ = _call_model(model_type="smart", system=system1, user=user1, cache=cache)
-
-    diff1 = ""
-    try:
-        data1 = loads_obj(raw1)
-        diff1 = _normalize_unified_diff(_maybe_unescape_llm_string(data1.get("diff", "")))
-    except Exception as e:
-        _trace(f"bad_json(1): {e}")
-        salvage = _extract_diff_fallback(raw1)
-        if salvage:
-            diff1 = salvage
+    # --- Attempt 1: ask LLM for a diff ----------------------------------
+    sys1, usr1 = _build_prompts(path, instruction, old)
+    raw1, _ = _call_model(model_type="smart", system=sys1, user=usr1, cache=cache)
+    diff1 = _parse_diff_from_raw(raw1, tag="1")
 
     if "@@" not in diff1:
-        salvage = _extract_diff_fallback(raw1)
-        if salvage:
-            diff1 = salvage
+        return _fulltext_fallback(path, instruction, old, reason="missing_diff", cache=cache, root=root, review_mode=review_mode)
 
-    if "@@" not in diff1:
-        return _fulltext_fallback(path, instruction, old, reason="missing_diff", cache=cache, root=root)
+    if old == "" and not _validate_diff_for_empty_old(diff1)[0]:
+        why = _validate_diff_for_empty_old(diff1)[1]
+        return _fulltext_fallback(path, instruction, old, reason=f"bad_diff_empty_old: {why}", cache=cache, root=root, review_mode=review_mode)
 
-    if old == "":
-        ok_empty, why_empty = _validate_diff_for_empty_old(diff1)
-        if not ok_empty:
-            return _fulltext_fallback(path, instruction, old, reason=f"bad_diff_empty_old: {why_empty}", cache=cache, root=root)
+    result1 = _try_diff_attempt(path, instruction, old, diff1, cache=cache, root=root, tag="1", review_mode=review_mode)
+    if result1 is not None:
+        return result1
 
-    apply_err1 = ""
-    try:
-        new1 = apply_unified_diff(old, diff1)
-        out1 = _finalize_ok(path, instruction, old, new1, diff1, root)
-        if out1.get("ok") is True:
-            return out1
-
-        detail1 = str(out1.get("detail", ""))
-        repair1 = _repair_hint_for_detail(detail1)
-        systemg, userg = _build_prompts(path, instruction, old, repair=repair1)
-        rawg, _ = _call_model(model_type="smart", system=systemg, user=userg, cache=cache)
-        try:
-            datag = loads_obj(rawg)
-            diffg = _normalize_unified_diff(_maybe_unescape_llm_string(datag.get("diff", "")))
-        except Exception as eg:
-            _trace(f"bad_json(guard-repair1): {eg}")
-            diffg = _extract_diff_fallback(rawg) or ""
-
-        if "@@" in diffg:
-            try:
-                newg = apply_unified_diff(old, diffg)
-                outg = _finalize_ok(path, instruction, old, newg, diffg, root)
-                if outg.get("ok") is True:
-                    return outg
-            except PatchApplyError as eg2:
-                _trace(f"patch_apply_failed(guard-repair1): {eg2}")
-
-        if "rewrite too violent" in detail1:
-            return out1
-
-        return out1
-
-    except PatchApplyError as e:
-        apply_err1 = str(e)
-        _trace(f"patch_apply_failed(1): {apply_err1}")
-
-    system2, user2 = _build_prompts(path, instruction, old, repair=f"patch_apply_failed: {apply_err1}")
-    raw2, _ = _call_model(model_type="smart", system=system2, user=user2, cache=cache)
-
-    diff2 = ""
-    try:
-        data2 = loads_obj(raw2)
-        diff2 = _normalize_unified_diff(_maybe_unescape_llm_string(data2.get("diff", "")))
-    except Exception as e2:
-        _trace(f"bad_json(2): {e2}")
-        salvage2 = _extract_diff_fallback(raw2)
-        if salvage2:
-            diff2 = salvage2
-
-    if "@@" not in diff2:
-        salvage2 = _extract_diff_fallback(raw2)
-        if salvage2:
-            diff2 = salvage2
+    # --- Attempt 2: retry with error feedback ----------------------------
+    sys2, usr2 = _build_prompts(path, instruction, old, repair="patch_apply_failed: see attempt 1")
+    raw2, _ = _call_model(model_type="smart", system=sys2, user=usr2, cache=cache)
+    diff2 = _parse_diff_from_raw(raw2, tag="2")
 
     if "@@" in diff2:
-        if old == "":
-            ok_empty2, why_empty2 = _validate_diff_for_empty_old(diff2)
-            if not ok_empty2:
-                return _fulltext_fallback(path, instruction, old, reason=f"bad_diff_empty_old: {why_empty2}", cache=cache, root=root)
+        if old == "" and not _validate_diff_for_empty_old(diff2)[0]:
+            why2 = _validate_diff_for_empty_old(diff2)[1]
+            return _fulltext_fallback(path, instruction, old, reason=f"bad_diff_empty_old: {why2}", cache=cache, root=root, review_mode=review_mode)
 
-        try:
-            new2 = apply_unified_diff(old, diff2)
-            out2 = _finalize_ok(path, instruction, old, new2, diff2, root)
-            if out2.get("ok") is True:
-                return out2
+        result2 = _try_diff_attempt(path, instruction, old, diff2, cache=cache, root=root, tag="2", review_mode=review_mode)
+        if result2 is not None:
+            return result2
 
-            detail2 = str(out2.get("detail", ""))
-            repair2 = _repair_hint_for_detail(detail2)
-            systemg2, userg2 = _build_prompts(path, instruction, old, repair=repair2)
-            rawg2, _ = _call_model(model_type="smart", system=systemg2, user=userg2, cache=cache)
-            try:
-                datag2 = loads_obj(rawg2)
-                diffg2 = _normalize_unified_diff(_maybe_unescape_llm_string(datag2.get("diff", "")))
-            except Exception as eg3:
-                _trace(f"bad_json(guard-repair2): {eg3}")
-                diffg2 = _extract_diff_fallback(rawg2) or ""
-
-            if "@@" in diffg2:
-                try:
-                    newg2 = apply_unified_diff(old, diffg2)
-                    outg2 = _finalize_ok(path, instruction, old, newg2, diffg2, root)
-                    if outg2.get("ok") is True:
-                        return outg2
-                except PatchApplyError as eg4:
-                    _trace(f"patch_apply_failed(guard-repair2): {eg4}")
-
-            if "rewrite too violent" in detail2:
-                return out2
-
-            return out2
-
-        except PatchApplyError as e2a:
-            _trace(f"patch_apply_failed(2): {e2a}")
-
-    return _fulltext_fallback(path, instruction, old, reason="patch_apply_failed twice", cache=cache, root=root)
+    # --- Attempt 3: full-text fallback -----------------------------------
+    return _fulltext_fallback(path, instruction, old, reason="patch_apply_failed twice", cache=cache, root=root, review_mode=review_mode)
 
 
 # =============================================================================
-# FULL REPLACE (exported) - used by tests
+# FULL REPLACE (exported)
 # =============================================================================
 
 def apply_full_replace(
@@ -881,18 +630,22 @@ def apply_full_replace(
     stage: bool = False,
     backup: bool = True,
 ) -> dict:
-    file_path = _resolve_repo_path(root, path)
+    """Replace a file's entire content after running guards.
+
+    Returns a ``dict`` for the RPC layer.
+    """
+    file_path = resolve_repo_path(root, path)
     if not file_path.exists():
         return {"ok": False, "error": "file_not_found", "file": path}
     if not isinstance(new, str):
         return {"ok": False, "error": "invalid_content"}
 
     old = file_path.read_text(encoding="utf-8", errors="replace")
-    new = _maybe_unescape_llm_string(new)
+    new = maybe_unescape_llm_string(new)
 
     patch = _make_patch_from_fulltext(path, old, new)
 
-    ok_future, why_future = _future_import_guard(old, new)
+    ok_future, why_future = guard_future_import(old, new)
     if not ok_future:
         return {"ok": False, "error": "guard_blocked", "detail": why_future, "patch": patch}
 
@@ -903,13 +656,11 @@ def apply_full_replace(
     if not ok:
         return {"ok": False, "error": "guard_blocked", "detail": why, "patch": patch}
 
-    if backup:
-        _backup_file(file_path)
     _atomic_write_text(file_path, new)
 
     staged = False
     if stage:
-        rc, out = _git(root, ["add", "--", path])
+        rc, out = git(root, ["add", "--", path])
         if rc != 0:
             return {"ok": False, "error": "git_add_failed", "detail": out[:8000]}
         staged = True
@@ -918,7 +669,7 @@ def apply_full_replace(
 
 
 # =============================================================================
-# APPLY EDIT (Run 1)
+# APPLY EDIT (pre-computed patch)
 # =============================================================================
 
 def apply_edit(
@@ -930,14 +681,18 @@ def apply_edit(
     stage: bool = False,
     backup: bool = True,
 ) -> dict:
-    file_path = _resolve_repo_path(root, path)
+    """Apply a pre-computed unified diff patch to *path*.
+
+    Returns a ``dict`` for the RPC layer.
+    """
+    file_path = resolve_repo_path(root, path)
     if not file_path.exists():
         return {"ok": False, "error": "file_not_found", "file": path}
     if not isinstance(patch, str) or "@@" not in patch:
         return {"ok": False, "error": "invalid_patch"}
 
     old = file_path.read_text(encoding="utf-8", errors="replace")
-    patch = _normalize_unified_diff(_maybe_unescape_llm_string(patch))
+    patch = _normalize_unified_diff(maybe_unescape_llm_string(patch))
 
     if old == "":
         ok_empty, why = _validate_diff_for_empty_old(patch)
@@ -949,10 +704,10 @@ def apply_edit(
     except PatchApplyError as e:
         return {"ok": False, "error": "patch_apply_failed", "detail": str(e)}
 
-    new = _autofix_future_import(old, new)
+    new = autofix_future_import(old, new)
 
     if not _py_syntax_ok(path, new):
-        okf, whyf = _future_import_guard(old, new)
+        okf, whyf = guard_future_import(old, new)
         if not okf:
             _trace(
                 "future_import_guard BLOCKED (apply_edit): "
@@ -970,7 +725,7 @@ def apply_edit(
     if not ok_guard:
         return {"ok": False, "error": "guard_blocked", "detail": why_guard}
 
-    ok_future, why_future = _future_import_guard(old, new)
+    ok_future, why_future = guard_future_import(old, new)
     if not ok_future:
         _trace(
             "future_import_guard BLOCKED (apply_edit): "
@@ -978,15 +733,29 @@ def apply_edit(
         )
         return {"ok": False, "error": "guard_blocked", "detail": why_future}
 
-    if backup:
-        _backup_file(file_path)
     _atomic_write_text(file_path, new)
 
     staged = False
     if stage:
-        rc, out = _git(root, ["add", "--", path])
+        rc, out = git(root, ["add", "--", path])
         if rc != 0:
             return {"ok": False, "error": "git_add_failed", "detail": out[:8000]}
         staged = True
 
     return {"ok": True, "file": path, "written": True, "staged": staged}
+
+
+# =============================================================================
+# POST-REVIEW WRITE — called after user resolves hunks in the frontend
+# =============================================================================
+
+def write_reviewed_content(path: str, content: str, *, root: str | Path) -> None:
+    """Write user-reviewed content to disk.
+
+    Called by the review flow after the user resolves hunks in the frontend.
+    Performs an atomic write without re-running guards (they already ran
+    before the review was sent to the user).
+    """
+    file_path = resolve_repo_path(Path(root) if isinstance(root, str) else root, path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_text(file_path, content)

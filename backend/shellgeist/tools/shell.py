@@ -804,12 +804,3 @@ def run_nix_python(
     nix_cmd += " -p " + " ".join(shlex.quote(p) for p in package_args)
     nix_cmd += " --run " + shlex.quote(cmd)
     return run_shell(nix_cmd, root=root)
-
-
-def plan_shell(task: str, *, root: Path) -> list[str]:
-    """Return a list of shell commands for *task*.
-
-    This is a legacy placeholder — the agent loop handles shell planning
-    via tool_use now.  Kept for the :SGShell quick-command path.
-    """
-    return [f"echo 'Shell planning not yet implemented for: {task}'"]

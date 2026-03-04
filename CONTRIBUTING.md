@@ -55,10 +55,11 @@ shellgeist/
 │   ├── shellgeist/
 │   │   ├── __init__.py       # Package root, __version__
 │   │   ├── cli.py            # CLI entry point (shellgeist command)
-│   │   ├── sgd.py            # Daemon entry point (sgd command)
-│   │   ├── config.py         # Environment variable configuration
-│   │   ├── context.py        # Project context discovery
+│   │   ├── sgd.py            # Daemon entry point (Unix socket server)
+│   │   ├── config.py         # Centralised env-var helpers
 │   │   ├── util_json.py      # Lenient JSON parser for LLM output
+│   │   ├── util_path.py      # resolve_repo_path() — safe path resolution
+│   │   ├── util_git.py       # git() subprocess helper
 │   │   ├── agent/            # Core agent loop & state
 │   │   │   ├── core.py       # Agent class, agentic loop
 │   │   │   ├── messages.py   # Message building helpers
@@ -68,7 +69,7 @@ shellgeist/
 │   │   │   ├── apply.py      # Unified diff application
 │   │   │   └── guards.py     # Diff safety guardrails
 │   │   ├── io/               # I/O primitives
-│   │   │   ├── events.py     # UI event emitter
+│   │   │   ├── events.py     # UI event emitter (streaming + review)
 │   │   │   ├── results.py    # Result formatting
 │   │   │   ├── telemetry.py  # Telemetry utilities
 │   │   │   └── transport.py  # Socket send_json / safe_drain
@@ -79,36 +80,46 @@ shellgeist/
 │   │   ├── protocol/         # JSON-lines RPC protocol
 │   │   │   ├── handler.py    # Command dispatcher
 │   │   │   ├── helpers.py    # Protocol utilities
-│   │   │   └── models.py     # Request/response models
+│   │   │   └── models.py     # Request/response models (Pydantic)
 │   │   ├── safety/           # Safety & guardrails
 │   │   │   ├── blocked.py    # Blocked command patterns
 │   │   │   ├── loop_guard.py # Infinite loop detection
-│   │   │   ├── retry.py      # Retry configuration
+│   │   │   ├── retry.py      # Exponential-backoff retry engine
 │   │   │   └── verify.py     # Output verification
 │   │   ├── session/          # Session & history
 │   │   │   ├── ops.py        # Session operations
 │   │   │   ├── repair.py     # Session repair utilities
 │   │   │   └── store.py      # SQLite history store
 │   │   └── tools/            # Tool implementations
-│   │       ├── base.py       # Tool base class
-│   │       ├── coder.py      # Code editing tool
-│   │       ├── executor.py   # Tool executor
-│   │       ├── fs.py         # Filesystem tool
-│   │       ├── parser.py     # Tool output parsing
-│   │       ├── policy.py     # Tool policy enforcement
-│   │       ├── preview.py    # Diff preview tool
-│   │       ├── runtime.py    # Runtime tool registry
-│   │       └── shell.py      # Shell command tool
-│   └── tests/                # Test suite
-│       ├── test_imports.py   # Smoke tests for all imports
-│       └── test_safety.py    # Safety module tests
+│   │       ├── __init__.py   # load_tools() — explicit registration
+│   │       ├── base.py       # Tool, ToolRegistry, global registry
+│   │       ├── coder.py      # Code editing tool (diff/fulltext pipeline)
+│   │       ├── executor.py   # Tool executor + review flow
+│   │       ├── fs.py         # Filesystem tools (read/write/list/find)
+│   │       ├── normalize.py  # LLM output normalisation
+│   │       ├── parser.py     # XML tool-call parser
+│   │       ├── policy.py     # Per-project tool policy
+│   │       ├── preview.py    # Code preview for tool calls
+│   │       ├── runtime.py    # Arg normalisation + missing-arg detection
+│   │       └── shell.py      # Shell command + PTY sessions
+│   └── tests/                # Test suite (84 tests)
+│       ├── test_diff_apply.py
+│       ├── test_guards.py
+│       ├── test_normalize.py
+│       ├── test_tool_parser.py
+│       └── test_util_json.py
 ├── nvim/                     # Neovim plugin (Lua)
 │   ├── plugin/shellgeist.lua # Plugin loader
 │   └── lua/shellgeist/
-│       ├── init.lua          # Plugin setup & orchestration
-│       ├── sidebar.lua       # Chat sidebar UI (NUI)
+│       ├── init.lua          # Plugin setup, commands, event dispatch
+│       ├── sidebar.lua       # Chat sidebar UI (nui.nvim)
 │       ├── rpc.lua           # Unix socket RPC client
-│       └── diff.lua          # Diff preview integration
+│       ├── diff.lua          # Diff preview & apply
+│       └── conflict.lua      # Inline accept/reject conflict view
+├── docs/                     # Technical documentation
+│   ├── ARCHITECTURE.md       # Full architecture & RPC protocol
+│   ├── AUDIT.md              # Code audit findings
+│   └── ROADMAP.md            # Refactoring roadmap
 ├── flake.nix                 # Nix flake (develop / run / build)
 ├── pyproject.toml            # Python packaging
 └── shellgeist                # Wrapper script (bash)
