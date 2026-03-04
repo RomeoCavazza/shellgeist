@@ -255,33 +255,38 @@ function M.run_agent(goal)
             return true
           end
 
-          -- ── File changed: open inline diff in source buffer ──
+          -- ── File changed: show diff in sidebar ──
           if channel == "file_changed" then
             local file_rel = meta.file or content or ""
             local file_root = meta.root or root
             if file_rel ~= "" then
               vim.schedule(function()
                 local filepath = file_rel
-                -- Resolve relative paths
                 if not filepath:match("^/") then
                   filepath = file_root .. "/" .. filepath
                 end
-                -- Use git to get old content, current file is new content
+                -- Get old content from git
                 local old_cmd = { "git", "-C", file_root, "show", "HEAD:" .. file_rel }
                 local old_out = vim.fn.systemlist(old_cmd)
+                if vim.v.shell_error ~= 0 then old_out = {} end
+                -- Get current file content
                 local current_lines = {}
                 if vim.fn.filereadable(filepath) == 1 then
                   current_lines = vim.fn.readfile(filepath)
                 end
-                if vim.v.shell_error ~= 0 then
-                  old_out = {}  -- new file
-                end
+                -- Compute unified diff and show as code card in sidebar
                 if #old_out > 0 or #current_lines > 0 then
-                  local ok_c, err_c = pcall(conflict.show, filepath, old_out, current_lines)
-                  if ok_c then
-                    sidebar.append_text("Inline diff opened: " .. file_rel .. " — co=original ct=accept cb=both", "info", {})
+                  local old_text = (#old_out > 0) and (table.concat(old_out, "\n") .. "\n") or ""
+                  local new_text = (#current_lines > 0) and (table.concat(current_lines, "\n") .. "\n") or ""
+                  local ok_d, diff_text = pcall(vim.diff, old_text, new_text, {
+                    algorithm = "histogram",
+                    result_type = "unified",
+                    ctxlen = 2,
+                  })
+                  if ok_d and diff_text and diff_text ~= "" then
+                    sidebar.append_text(diff_text, "code", { file = file_rel })
                   else
-                    sidebar.append_text("Diff display failed: " .. tostring(err_c), "error", {})
+                    sidebar.append_text("Changed: " .. file_rel, "observation", { file = file_rel })
                   end
                 end
               end)
@@ -297,40 +302,12 @@ function M.run_agent(goal)
 
             if file_rel ~= "" then
               sidebar.set_thinking(false)
-              sidebar.append_text("📝 Review: " .. file_rel, "action", meta)
-
-              vim.schedule(function()
-                local filepath = file_rel
-                if not filepath:match("^/") then
-                  filepath = root .. "/" .. filepath
-                end
-
-                local ok_c, err_c = pcall(conflict.show_inline, filepath, old_content, new_content, {
-                  on_complete = function(resolved_content)
-                    -- Send the review decision back to the daemon
-                    if current_reply_fn then
-                      if resolved_content then
-                        current_reply_fn({ cmd = "review_decision", approved = true, content = resolved_content })
-                        sidebar.append_text("✓ Approved: " .. file_rel, "observation", { file = file_rel })
-                      else
-                        current_reply_fn({ cmd = "review_decision", approved = false })
-                        sidebar.append_text("✗ Rejected: " .. file_rel, "error", {})
-                      end
-                    end
-                    sidebar.set_thinking(true)
-                  end,
-                })
-
-                if ok_c then
-                  sidebar.append_text("co=keep  ct=accept  ca=all  cr=reject  ]x/[x=nav", "code", { file = file_rel })
-                else
-                  sidebar.append_text("Review display failed: " .. tostring(err_c), "error", {})
-                  -- Auto-reject on display failure
-                  if current_reply_fn then
-                    current_reply_fn({ cmd = "review_decision", approved = false })
-                  end
-                end
-              end)
+              sidebar.append_text("", "diff_review", {
+                file = file_rel,
+                old_content = old_content,
+                new_content = new_content,
+                reply_fn = current_reply_fn,
+              })
             end
             return true
           end

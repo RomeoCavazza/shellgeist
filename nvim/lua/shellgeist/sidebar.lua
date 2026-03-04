@@ -367,6 +367,120 @@ local function render_error(text)
   scroll_bottom()
 end
 
+--- Render an in-sidebar diff card with [a] accept / [r] reject.
+--- Used for review_pending (hunk-level review for edit_file in review mode)
+--- and file_changed (auto mode, post-write).   Like claude-code's terminal.
+--- @param meta table  requires file, old_content, new_content, reply_fn
+local function render_diff_review(meta)
+  local file = meta.file or "?"
+  local old_content = meta.old_content or ""
+  local new_content = meta.new_content or ""
+  local reply_fn = meta.reply_fn
+
+  -- Compute unified diff
+  local ok_d, diff_text = pcall(vim.diff, old_content, new_content, {
+    algorithm = "histogram",
+    result_type = "unified",
+    ctxlen = 3,
+  })
+
+  if not ok_d or not diff_text or diff_text == "" then
+    -- No differences → auto-approve
+    local s = buf_append({ "  No changes for " .. file, "" })
+    if s then hl_range(s, 1, "SGCardBody") end
+    scroll_bottom()
+    if reply_fn then reply_fn({ cmd = "review_decision", approved = true, content = new_content }) end
+    M.set_thinking(true)
+    return
+  end
+
+  -- Parse diff lines, skip --- / +++ headers (file is in the card title)
+  local raw_lines = vim.split(diff_text, "\n", { plain = true })
+  local body = {}
+  local max_lines = 50
+  local truncated = false
+  for _, l in ipairs(raw_lines) do
+    if not l:match("^%-%-%-") and not l:match("^%+%+%+") then
+      if #body >= max_lines then truncated = true; break end
+      body[#body + 1] = l
+    end
+  end
+  if truncated then
+    body[#body + 1] = "… (" .. (#raw_lines - max_lines) .. " more lines)"
+  end
+
+  -- Build card
+  local label = "📝 " .. file
+  local card = build_card(label, body, 0)
+  local start = buf_append(card)
+  if start then
+    hl_range(start, 1, "SGCardCode")
+    hl_range(start + #card - 1, 1, "SGCardBorder")
+    for i = 2, #card - 1 do
+      local line_text = card[i] or ""
+      local line_idx = start + i - 1
+      local c = line_text:sub(5)  -- strip "│ " (3-byte char + space)
+      hl_partial(line_idx, 0, 4, "SGCardBorder")
+      if c:sub(1, 1) == "+" and c:sub(1, 3) ~= "+++" then
+        hl_partial(line_idx, 4, -1, "SGDiffAdd")
+      elseif c:sub(1, 1) == "-" and c:sub(1, 3) ~= "---" then
+        hl_partial(line_idx, 4, -1, "SGDiffDel")
+      elseif c:sub(1, 2) == "@@" then
+        hl_partial(line_idx, 4, -1, "SGDiffHdr")
+      else
+        hl_partial(line_idx, 4, -1, "SGCardBody")
+      end
+    end
+  end
+
+  -- Accept / reject prompt
+  local prompt_line = "  [a] accept   [r] reject   (" .. file .. ")"
+  local prompt_start = buf_append({ prompt_line, "" })
+  if prompt_start then
+    hl_range(prompt_start, 1, "SGApproval")
+  end
+  scroll_bottom()
+
+  -- Keybindings
+  if not M.chat or not buf_valid(M.chat.bufnr) then return end
+  local bufnr = M.chat.bufnr
+  local responded = false
+
+  local function cleanup()
+    pcall(vim.keymap.del, "n", "a", { buffer = bufnr })
+    pcall(vim.keymap.del, "n", "r", { buffer = bufnr })
+  end
+
+  vim.keymap.set("n", "a", function()
+    if responded then return end
+    responded = true
+    cleanup()
+    if prompt_start and buf_valid(bufnr) then
+      pcall(vim.api.nvim_buf_set_lines, bufnr, prompt_start, prompt_start + 1, false, { "  ✓ Accepted" })
+      hl_range(prompt_start, 1, "SGSuccess")
+    end
+    if reply_fn then reply_fn({ cmd = "review_decision", approved = true, content = new_content }) end
+    M.set_thinking(true)
+  end, { buffer = bufnr, silent = true, noremap = true, desc = "SG: accept diff" })
+
+  vim.keymap.set("n", "r", function()
+    if responded then return end
+    responded = true
+    cleanup()
+    if prompt_start and buf_valid(bufnr) then
+      pcall(vim.api.nvim_buf_set_lines, bufnr, prompt_start, prompt_start + 1, false, { "  ✗ Rejected" })
+      hl_range(prompt_start, 1, "SGError")
+    end
+    if reply_fn then reply_fn({ cmd = "review_decision", approved = false }) end
+    M.set_thinking(true)
+  end, { buffer = bufnr, silent = true, noremap = true, desc = "SG: reject diff" })
+
+  -- Focus chat window so user can press a/r
+  if M.chat and win_valid(M.chat.winid) then
+    pcall(vim.api.nvim_set_current_win, M.chat.winid)
+  end
+end
+
 --- Render an inline approval prompt with a/r keys.
 --- @param meta table  must contain tool and reply_fn
 local function render_approval_prompt(meta)
@@ -670,6 +784,8 @@ function M.append_text(text, msg_type, meta)
     render_observation(text, meta)
   elseif msg_type == "error" then
     render_error(text)
+  elseif msg_type == "diff_review" then
+    render_diff_review(meta)
   elseif msg_type == "approval_prompt" then
     render_approval_prompt(meta)
   end
