@@ -90,7 +90,8 @@ class LoopGuard:
         if count >= self.config.block_threshold:
             return (
                 LoopGuardVerdict.BLOCK,
-                f"BLOCKED_REPEAT_TOOL: {tool_name} called {count} times with identical parameters.",
+                f"BLOCKED_REPEAT_TOOL: {tool_name} called {count} times with identical parameters. "
+                "NO result was returned. Do NOT pretend this succeeded. Try a different approach.",
             )
 
         if self._detect_ping_pong():
@@ -103,6 +104,11 @@ class LoopGuard:
 
     def record_outcome(self, tool_name: str, args: dict[str, Any], result: str) -> tuple[bool, str]:
         call_hash = self._hash_call(tool_name, args)
+
+        # If the call failed, reset call count so a retry is allowed.
+        # The outcome_block_threshold below still catches repeated identical failures.
+        if is_failed_result(result):
+            self.call_counts[call_hash] = max(0, self.call_counts.get(call_hash, 1) - 1)
 
         # Track successful identical calls — block after success_repeat_threshold
         if not is_failed_result(result):

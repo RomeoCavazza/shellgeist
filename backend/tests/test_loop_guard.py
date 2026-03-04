@@ -140,6 +140,34 @@ class TestRecordOutcome:
         blocked, _ = guard.record_outcome("write_file", args2, "Successfully wrote to a.txt\n\nDiff:...")
         assert not blocked  # different args → different hash
 
+    def test_failed_call_allows_retry(self):
+        """A failed call should not count toward block threshold — retry is allowed."""
+        guard = LoopGuard(LoopGuardConfig(block_threshold=2))
+        args = {"path": "README.md"}
+        # First call fails (file not found)
+        v, _ = guard.check_call("read_file", args)
+        assert v == LoopGuardVerdict.ALLOW
+        guard.record_outcome("read_file", args, "Error: file not found")
+        # Second call with same args should be allowed (failure reset the count)
+        v, _ = guard.check_call("read_file", args)
+        assert v == LoopGuardVerdict.ALLOW
+
+    def test_failed_then_success_not_blocked(self):
+        """Fail → create file → retry: the retry should succeed without blocking."""
+        guard = LoopGuard(LoopGuardConfig(block_threshold=2))
+        args = {"path": "README.md"}
+        # Call 1: read_file fails
+        guard.check_call("read_file", args)
+        guard.record_outcome("read_file", args, "Error: file not found")
+        # (agent creates the file with write_file — different tool, not tracked here)
+        # Call 2: read_file succeeds
+        v, _ = guard.check_call("read_file", args)
+        assert v == LoopGuardVerdict.ALLOW
+        guard.record_outcome("read_file", args, "# Home\n\n- Arduino/\n- Bureau/")
+        # Call 3: same read_file — NOW it should be blocked (already succeeded)
+        v, _ = guard.check_call("read_file", args)
+        assert v == LoopGuardVerdict.BLOCK
+
 
 # ---------------------------------------------------------------------------
 # Ping-pong detection

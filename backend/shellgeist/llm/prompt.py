@@ -69,6 +69,7 @@ RULES:
 16. PREFER STRUCTURED TOOLS over run_shell: use list_files (not ls), read_file (not cat), write_file (not echo/tee/>). Only use run_shell when no dedicated tool exists.
 17. MULTI-STEP TASKS: handle ONE step at a time. Call ONE tool, get its result, then call the next. NEVER try to combine multiple operations in a single shell command.
 18. NEVER redirect shell output to a file (> file). Use the tool result + write_file instead.
+19. NEVER fabricate data in write_file content. If you need directory listings, file contents, or system state, you MUST call the appropriate tool FIRST and use its ACTUAL result. Writing made-up data is a critical failure.
 TOOL FORMAT (exact):
 <tool_use>{{"name": "run_shell", "arguments": {{"command": "ls -la"}}}}</tool_use>
 
