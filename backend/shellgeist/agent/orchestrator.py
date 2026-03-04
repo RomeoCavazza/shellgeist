@@ -141,13 +141,14 @@ def _looks_like_final_response(content: str) -> bool:
         return True
 
     # Short completion words ("Terminé", "Done", "Voilà") are only final
-    # when accompanied by enough context (>= 3 non-thought lines)
+    # when accompanied by enough context (>= 2 non-thought lines).
+    # Allow short completions like "Voici le listing.\nTerminé."
     completion_markers = (
         "terminé", "done.", "done!", "completed", "finished",
-        "voilà", "c'est fait",
+        "voilà", "c'est fait", "here is", "voici",
     )
     has_completion = any(m in lower for m in completion_markers)
-    return bool(has_completion and len(non_thought) >= 3)
+    return bool(has_completion and len(non_thought) >= 2)
 
 
 def decide_no_tool_action(

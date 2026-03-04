@@ -39,6 +39,41 @@ def _shell_creates_file(cmd: str) -> bool:
     return bool(_FILE_CREATION_RE.search(cmd))
 
 
+def _targets_project_dir(cmd: str, root: str) -> bool:
+    """Return True if the file path in a shell write targets the project directory.
+
+    Files outside the project (e.g. ~/.config/, /tmp/) should be written via
+    run_shell, not write_file (which only works inside the repo root).
+    """
+    # Extract potential file paths from the command
+    # Look for paths after redirection operators or as tee arguments
+    import os
+    from pathlib import Path
+
+    root_resolved = Path(root).resolve()
+    # If the command contains absolute paths starting with ~ or / that are
+    # outside the project, allow it
+    path_patterns = re.findall(r'[>]\s*([^\s;|&]+)|tee\s+([^\s;|&]+)', cmd)
+    for groups in path_patterns:
+        for p in groups:
+            if not p:
+                continue
+            expanded = os.path.expanduser(p)
+            try:
+                resolved = Path(expanded).resolve()
+                if not str(resolved).startswith(str(root_resolved)):
+                    return False  # outside project → allow shell write
+            except Exception:
+                pass
+    # If command mentions ~ or absolute paths outside root, allow it
+    if '~/' in cmd or '~"' in cmd or "~'" in cmd:
+        return False
+    for token in cmd.split():
+        if token.startswith('/') and not token.startswith(str(root_resolved)):
+            return False
+    return True  # assume in-project by default → block
+
+
 @dataclass
 class ToolExecutionOutcome:
     kind: str  # observation | failure
@@ -234,10 +269,10 @@ async def execute_tool_call(
 
         if func_name in ("run_shell", "exec_shell_session"):
             cmd = str(call_args.get("command") or "")
-            if _shell_creates_file(cmd):
+            if _shell_creates_file(cmd) and _targets_project_dir(cmd, root):
                 await log("Blocked: shell file creation detected, use write_file instead", type="error")
                 return (
-                    "INVALID_ACTION: Do NOT create files via shell commands. "
+                    "INVALID_ACTION: Do NOT create files via shell commands for in-project files. "
                     "Use the `write_file` tool with `path` and `content` parameters instead. "
                     'Example: <tool_use>{"name": "write_file", "arguments": {"path": "file.md", "content": "# Title\\nContent"}}</tool_use>'
                 )
