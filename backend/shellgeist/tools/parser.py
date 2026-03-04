@@ -43,7 +43,7 @@ def parse_xml_tool_use(
     *,
     debug_log: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
-    matches = list(_TOOL_RE.finditer(text))
+    matches: list[re.Match[str] | _FakeMatch] = list(_TOOL_RE.finditer(text))
 
     # Fallback: split on any opening tool tag if regex didn't match
     if not matches:

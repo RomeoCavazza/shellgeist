@@ -139,7 +139,7 @@ def _stream_reader(
     """Runs in a thread: reads NDJSON stream and puts (chunk_str, done) into out_queue. Puts None when done."""
     import sys
     dbg = _debug_enabled()
-    def _log(m):
+    def _log(m: str) -> None:
         if not dbg:
             return
         sys.stderr.write(f"DEBUG [stream_thread]: {m}\n")
@@ -204,7 +204,7 @@ async def create_stream(
     import sys
     dbg = _debug_enabled()
 
-    def _log(m):
+    def _log(m: str) -> None:
         if not dbg:
             return
         sys.stderr.write(f"DEBUG [create_stream]: {m}\n")

@@ -7,7 +7,7 @@ import sqlite3
 
 DB_PATH = os.path.expanduser("~/.cache/shellgeist/history.db")
 
-def init_db():
+def init_db() -> None:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -24,7 +24,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_message(session_id, role, content, log_type=None):
+def save_message(session_id: str, role: str, content: str, log_type: str | None = None) -> None:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
@@ -34,7 +34,7 @@ def save_message(session_id, role, content, log_type=None):
     conn.commit()
     conn.close()
 
-def get_session_history(session_id, for_ui=False):
+def get_session_history(session_id: str, for_ui: bool = False) -> list[dict[str, str]]:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     if for_ui:

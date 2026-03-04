@@ -23,9 +23,60 @@ def _resolve_root(root_str: str | None) -> Path:
 # Global cache for agents to avoid re-scanning and re-summarizing on every request
 _agent_cache: dict[str, Any] = {}
 
+
+async def _handle_agent_task(req: Any, writer: Any | None, reader: Any | None) -> dict:
+    """Run an agent task (the most complex RPC handler)."""
+    root = _resolve_root(req.root)
+    if not req.goal:
+        raise ValueError("missing_goal")
+
+    session_id = req.session_id or "default"
+    if session_id not in _agent_cache:
+        from shellgeist.agent import Agent
+        _agent_cache[session_id] = Agent(root=str(root))
+
+    agent = _agent_cache[session_id]
+    res = await agent.run_task(req.goal, writer=writer, session_id=session_id, mode=req.mode, reader=reader)
+    return SGResult(ok=res["ok"], data=res).model_dump()
+
+
+async def _handle_edit_apply(req: Any) -> dict:
+    """Apply a pre-computed patch."""
+    root = _resolve_root(req.root)
+    if not req.file:
+        raise ValueError("missing_file")
+    if not req.patch:
+        raise ValueError("missing_patch")
+    patch_result = apply_edit(
+        req.file, req.patch,
+        root=root,
+        instruction=req.instruction or "apply",
+        stage=req.stage,
+        backup=req.backup,
+    )
+    return SGResult(ok=True, data=patch_result).model_dump()
+
+
+async def _handle_edit_apply_full(req: Any) -> dict:
+    """Apply a full file replacement."""
+    root = _resolve_root(req.root)
+    if not req.file:
+        raise ValueError("missing_file")
+    if not req.text:
+        raise ValueError("missing_text")
+    replace_result = apply_full_replace(
+        req.file, req.text,
+        root=root,
+        instruction=req.instruction or "apply_full",
+        stage=req.stage,
+        backup=req.backup,
+    )
+    return SGResult(ok=True, data=replace_result).model_dump()
+
+
 async def handle_request(raw_req: dict, writer: Any | None = None, reader: Any | None = None) -> dict:
     try:
-        req = TypeAdapter(SGRequest).validate_python(raw_req)
+        req: Any = TypeAdapter(SGRequest).validate_python(raw_req)
     except ValidationError as e:
         return SGResult(ok=False, error="validation_error", detail=str(e)).model_dump()
 
@@ -97,60 +148,20 @@ async def handle_request(raw_req: dict, writer: Any | None = None, reader: Any |
                 raise ValueError("missing_file")
             if not req.instruction:
                 raise ValueError("missing_instruction")
-            out = edit_plan(req.file, req.instruction, root=root)
-            return SGResult(ok=True, data=out.to_dict()).model_dump()
+            edit_result = edit_plan(req.file, req.instruction, root=root)
+            return SGResult(ok=True, data=edit_result.to_dict()).model_dump()
 
         # ---------------- edit apply (patch) ----------------
         if cmd == 'edit_apply':
-            root = _resolve_root(req.root)
-            if not req.file:
-                raise ValueError("missing_file")
-            if not req.patch:
-                raise ValueError("missing_patch")
-            out = apply_edit(
-                req.file,
-                req.patch,
-                root=root,
-                instruction=req.instruction or "apply",
-                stage=req.stage,
-                backup=req.backup,
-            )
-            return SGResult(ok=True, data=out).model_dump()
+            return await _handle_edit_apply(req)
 
         # ---------------- edit apply full replace ----------------
         if cmd == 'edit_apply_full':
-            root = _resolve_root(req.root)
-            if not req.file:
-                raise ValueError("missing_file")
-            if not req.text:
-                raise ValueError("missing_text")
-            out = apply_full_replace(
-                req.file,
-                req.text,
-                root=root,
-                instruction=req.instruction or "apply_full",
-                stage=req.stage,
-                backup=req.backup,
-            )
-            return SGResult(ok=True, data=out).model_dump()
+            return await _handle_edit_apply_full(req)
 
         # ---------------- agent task (NEW) ----------------
         if cmd == 'agent_task':
-            root = _resolve_root(req.root)
-            if not req.goal:
-                raise ValueError("missing_goal")
-
-            session_id = req.session_id or "default"
-            if session_id in _agent_cache:
-                agent = _agent_cache[session_id]
-            else:
-                from shellgeist.agent import Agent
-
-                agent = Agent(root=str(root))
-                _agent_cache[session_id] = agent
-
-            res = await agent.run_task(req.goal, writer=writer, session_id=session_id, mode=req.mode, reader=reader)
-            return SGResult(ok=res["ok"], data=res).model_dump()
+            return await _handle_agent_task(req, writer, reader)
 
         if cmd == "get_history":
             from shellgeist.session.store import get_session_history

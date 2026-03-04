@@ -76,8 +76,8 @@ class RetryEngine:
 
     def _next_delay_ms(self, attempt: int) -> int:
         exp = self.config.base_backoff_ms * (2 ** max(0, attempt - 1))
-        capped = min(exp, self.config.max_backoff_ms)
-        jitter = random.randint(0, self.config.jitter_ms) if self.config.jitter_ms > 0 else 0
+        capped: int = min(exp, self.config.max_backoff_ms)
+        jitter: int = random.randint(0, self.config.jitter_ms) if self.config.jitter_ms > 0 else 0
         return capped + jitter
 
     async def run_async(

@@ -52,6 +52,134 @@ class ToolExecutionOutcome:
     done_meta: dict[str, Any] | None = None
 
 
+# ------------------------------------------------------------------
+# Pre-flight: policy + loop guard
+# ------------------------------------------------------------------
+
+def _preflight_checks(
+    func_name: str,
+    args: dict[str, Any],
+    *,
+    task_terminal_only: bool,
+    policy: Any,
+    loop_guard: Any,
+    last_shell_session_id: str | None,
+    tool_meta: dict[str, Any],
+) -> ToolExecutionOutcome | None:
+    """Return an early outcome if policy or loop guard blocks the call, else None."""
+    policy_args = build_policy_args(args, task_terminal_only=task_terminal_only)
+    decision = policy.evaluate(func_name, policy_args)
+    if not decision.allowed:
+        policy_msg = decision.reason or "POLICY_DENY: tool call is not allowed by active policy."
+        return ToolExecutionOutcome(kind="observation", func_name=func_name, observation=policy_msg, last_shell_session_id=last_shell_session_id)
+
+    verdict, verdict_msg = loop_guard.check_call(func_name, args)
+    if verdict == "circuit":
+        return ToolExecutionOutcome(
+            kind="failure",
+            func_name=func_name,
+            error_code="loop_circuit_breaker",
+            final_response=(
+                "Agent loop stopped by circuit breaker due to excessive repetitive tool activity. "
+                "Please retry with a narrower task."
+            ),
+            done_meta={"thinking": False, "circuit": True},
+            last_shell_session_id=last_shell_session_id,
+        )
+
+    if verdict == "block":
+        res = verdict_msg or (
+            "BLOCKED_REPEAT_TOOL: This exact tool call failed repeatedly. "
+            "Do not retry it; choose another approach."
+        )
+        return ToolExecutionOutcome(kind="observation", func_name=func_name, observation=str(res), last_shell_session_id=last_shell_session_id)
+
+    return None
+
+
+# ------------------------------------------------------------------
+# Post-execution: session tracking + shell hints
+# ------------------------------------------------------------------
+
+def _extract_session_id(func_name: str, res: Any, fallback: str | None) -> str | None:
+    """Extract a new shell session_id from a start_shell_session result."""
+    if func_name != "start_shell_session":
+        return fallback
+    try:
+        start_obj = json.loads(str(res or ""))
+        if isinstance(start_obj, dict) and start_obj.get("ok") is True:
+            sid = str(start_obj.get("session_id") or "").strip()
+            if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", sid):
+                return sid
+    except Exception:
+        pass
+    return fallback
+
+
+def _append_shell_hints(func_name: str, res_str: str) -> str:
+    """Append STATE_HINT to exec_shell_session results when appropriate."""
+    if func_name != "exec_shell_session":
+        return res_str
+    try:
+        obj = json.loads(res_str)
+        if isinstance(obj, dict):
+            if obj.get("error") == "command_failed" and obj.get("alive") is True:
+                res_str += (
+                    "\nSTATE_HINT: command failed but shell session is still alive. "
+                    "Do NOT start a new session; fix and retry in this same session."
+                )
+            elif obj.get("error") in {"session_terminated", "session_not_found"}:
+                res_str += (
+                    "\nSTATE_HINT: shell session is not usable. "
+                    "List sessions, then start one fresh session and use its new session_id."
+                )
+    except Exception:
+        pass
+    return res_str
+
+
+# ------------------------------------------------------------------
+# Review flow (hunk-level review for edit_file)
+# ------------------------------------------------------------------
+
+async def _handle_review_flow(
+    func_name: str,
+    res: Any,
+    res_str: str,
+    *,
+    root: str,
+    request_review: Callable[..., Awaitable[str | None]],
+    log: Callable[..., Awaitable[None]],
+    tool_meta: dict[str, Any],
+) -> tuple[str, bool]:
+    """Handle hunk-level review for edit_file. Returns (updated_res_str, touched_code)."""
+    touched_code = False
+    try:
+        result_data = res if isinstance(res, dict) else {}
+        if result_data.get("ok") and not result_data.get("written"):
+            old_c = result_data.get("old_content", "")
+            new_c = result_data.get("new_content", "")
+            fpath = result_data.get("file", "")
+            if fpath and (old_c or new_c):
+                await log(f"Review pending: {fpath}", type="info", meta=tool_meta)
+                resolved = await request_review(fpath, old_c, new_c)
+                if resolved is not None:
+                    from shellgeist.tools.coder import write_reviewed_content
+                    write_reviewed_content(fpath, resolved, root=root)
+                    res_str = f"Successfully edited {fpath} (review approved, hunks resolved)"
+                    touched_code = True
+                else:
+                    res_str = f"Edit rejected by user for {fpath} in review mode"
+                    await log(res_str, type="info", meta=tool_meta)
+    except Exception as exc:
+        await log(f"review_flow_error: {exc}", type="error", meta=tool_meta)
+    return res_str, touched_code
+
+
+# ------------------------------------------------------------------
+# Main entry point
+# ------------------------------------------------------------------
+
 async def execute_tool_call(
     *,
     func_name: str,
@@ -73,43 +201,27 @@ async def execute_tool_call(
     tool_meta = build_tool_meta(func_name, args)
     await emit_execution_event("status", "", phase="tool_use", meta={"tool": func_name})
 
-    policy_args = build_policy_args(args, task_terminal_only=task_terminal_only)
-    decision = policy.evaluate(func_name, policy_args)
-    if not decision.allowed:
-        policy_msg = decision.reason or "POLICY_DENY: tool call is not allowed by active policy."
-        await log(policy_msg, type="info", meta=tool_meta)
-        return ToolExecutionOutcome(kind="observation", func_name=func_name, observation=policy_msg, last_shell_session_id=last_shell_session_id)
-
-    verdict, verdict_msg = loop_guard.check_call(func_name, args)
-    if verdict == "circuit":
-        final_response = (
-            "Agent loop stopped by circuit breaker due to excessive repetitive tool activity. "
-            "Please retry with a narrower task."
-        )
-        return ToolExecutionOutcome(
-            kind="failure",
-            func_name=func_name,
-            error_code="loop_circuit_breaker",
-            final_response=final_response,
-            done_meta={"thinking": False, "circuit": True},
-            last_shell_session_id=last_shell_session_id,
-        )
-
-    if verdict == "block":
-        res = verdict_msg or (
-            "BLOCKED_REPEAT_TOOL: This exact tool call failed repeatedly. "
-            "Do not retry it; choose another approach."
-        )
-        await log(f"Calling: {func_name}", type="action", meta=tool_meta)
-        res_str = str(res)
-        await log(res_str[:4000], type="observation")
-        return ToolExecutionOutcome(kind="observation", func_name=func_name, observation=res_str, last_shell_session_id=last_shell_session_id)
+    # ── Pre-flight: policy + loop guard ──
+    early = _preflight_checks(
+        func_name, args,
+        task_terminal_only=task_terminal_only,
+        policy=policy,
+        loop_guard=loop_guard,
+        last_shell_session_id=last_shell_session_id,
+        tool_meta=tool_meta,
+    )
+    if early is not None:
+        if early.kind == "observation":
+            await log(f"Calling: {func_name}", type="action", meta=tool_meta)
+            await log(early.observation[:4000], type="observation")
+        return early
 
     code_preview = code_preview_for_tool(func_name, args)
     if code_preview:
         await emit_execution_event("code", code_preview, phase="tool_use", meta=tool_meta)
 
-    async def _run_tool_once(_attempt: int):
+    # ── Build tool runner with guards ──
+    async def _run_tool_once(_attempt: int) -> Any:
         call_args = dict(args)
 
         if func_name in SHELL_SESSION_TOOLS:
@@ -117,11 +229,9 @@ async def execute_tool_call(
             if healed:
                 await log(f"Auto-heal session_id -> {last_shell_session_id}", type="info")
 
-        # Inject review_mode for edit_file in review mode
         if review_mode and func_name == "edit_file":
             call_args["review_mode"] = True
 
-        # Block run_shell from creating/writing files — force use of write_file
         if func_name in ("run_shell", "exec_shell_session"):
             cmd = str(call_args.get("command") or "")
             if _shell_creates_file(cmd):
@@ -142,7 +252,7 @@ async def execute_tool_call(
         tool = registry.tools.get(func_name)
         return tool.execute(**call_args, root=root) if tool else f"Error: {func_name} not found."
 
-    async def _on_tool_retry(attempt: int, error_class: str, reason: str, delay_ms: int, _last: Any | None):
+    async def _on_tool_retry(attempt: int, error_class: str, reason: str, delay_ms: int, _last: Any | None) -> None:
         await telemetry.emit_retry_status(
             "tool",
             attempt=attempt,
@@ -157,6 +267,7 @@ async def execute_tool_call(
             meta=tool_meta,
         )
 
+    # ── Execute with retry ──
     await log(f"Calling: {func_name}", type="action", meta=tool_meta)
     res, tool_report = await retry_engine.run_async(
         key=f"tool:{func_name}",
@@ -173,36 +284,10 @@ async def execute_tool_call(
             meta=tool_meta,
         )
 
-    updated_session_id = last_shell_session_id
-    if tool_report.outcome == "success" and func_name == "start_shell_session":
-        try:
-            start_obj = json.loads(str(res or ""))
-            if isinstance(start_obj, dict) and start_obj.get("ok") is True:
-                sid = str(start_obj.get("session_id") or "").strip()
-                if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", sid):
-                    updated_session_id = sid
-        except Exception:
-            pass
-
-    res_str = str(res or "Success")
+    # ── Post-process ──
+    updated_session_id = _extract_session_id(func_name, res, last_shell_session_id)
+    res_str = _append_shell_hints(func_name, str(res or "Success"))
     touched_code, verified_execution = detect_execution_evidence(func_name, res_str)
-
-    if func_name == "exec_shell_session":
-        try:
-            obj = json.loads(res_str)
-            if isinstance(obj, dict):
-                if obj.get("error") == "command_failed" and obj.get("alive") is True:
-                    res_str += (
-                        "\nSTATE_HINT: command failed but shell session is still alive. "
-                        "Do NOT start a new session; fix and retry in this same session."
-                    )
-                elif obj.get("error") in {"session_terminated", "session_not_found"}:
-                    res_str += (
-                        "\nSTATE_HINT: shell session is not usable. "
-                        "List sessions, then start one fresh session and use its new session_id."
-                    )
-        except Exception:
-            pass
 
     blocked_outcome, blocked_msg = loop_guard.record_outcome(func_name, args, res_str)
     if blocked_outcome and blocked_msg:
@@ -210,31 +295,19 @@ async def execute_tool_call(
 
     # ── Review mode: hunk-level review for edit_file ──
     if review_mode and func_name == "edit_file" and tool_report.outcome == "success" and request_review:
-        try:
-            result_data = res if isinstance(res, dict) else {}
-            if result_data.get("ok") and not result_data.get("written"):
-                old_c = result_data.get("old_content", "")
-                new_c = result_data.get("new_content", "")
-                fpath = result_data.get("file", "")
-                if fpath and (old_c or new_c):
-                    await log(f"Review pending: {fpath}", type="info", meta=tool_meta)
-                    resolved = await request_review(fpath, old_c, new_c)
-                    if resolved is not None:
-                        from shellgeist.tools.coder import write_reviewed_content
-                        write_reviewed_content(fpath, resolved, root=root)
-                        res_str = f"Successfully edited {fpath} (review approved, hunks resolved)"
-                        touched_code = True
-                    else:
-                        res_str = f"Edit rejected by user for {fpath} in review mode"
-                        await log(res_str, type="info", meta=tool_meta)
-        except Exception as exc:
-            _trace_msg = f"review_flow_error: {exc}"
-            await log(_trace_msg, type="error", meta=tool_meta)
+        res_str, review_touched = await _handle_review_flow(
+            func_name, res, res_str,
+            root=root,
+            request_review=request_review,
+            log=log,
+            tool_meta=tool_meta,
+        )
+        if review_touched:
+            touched_code = True
 
     await log(res_str[:4000], type="observation")
 
     # ── Emit file_changed event for write_file / edit_file ──
-    # This allows the frontend to open inline diff in the source buffer.
     if func_name in ("write_file", "edit_file") and tool_report.outcome == "success":
         file_path = str(args.get("path") or args.get("file_path") or args.get("file") or "")
         if file_path and "Successfully" in res_str:

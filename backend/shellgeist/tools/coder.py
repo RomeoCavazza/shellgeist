@@ -243,7 +243,7 @@ def _call_model(*, model_type: str, system: str, user: str, cache: dict[str, _Mo
 # PROMPTS
 # =============================================================================
 
-def _build_prompts(path: str, instruction: str, old: str, repair: str | None = None):
+def _build_prompts(path: str, instruction: str, old: str, repair: str | None = None) -> tuple[str, str]:
     empty_hint = ""
     if old == "":
         empty_hint = "OLD IS EMPTY. Only + lines. No context lines.\n"
@@ -266,7 +266,7 @@ def _build_prompts(path: str, instruction: str, old: str, repair: str | None = N
     return system, user
 
 
-def _build_fulltext_prompts(path: str, instruction: str, old: str, repair: str | None = None):
+def _build_fulltext_prompts(path: str, instruction: str, old: str, repair: str | None = None) -> tuple[str, str]:
     future_hint = (
         "If the file contains `from __future__ import ...`, it MUST remain the first non-comment/non-docstring statement.\n"
         "Do not add imports or code before it.\n"

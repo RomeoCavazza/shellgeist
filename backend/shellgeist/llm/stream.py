@@ -36,7 +36,7 @@ async def run_llm_stream_with_retry(
         _dbg("Stream finished")
         return "".join(content_parts)
 
-    async def _on_llm_retry(attempt: int, error_class: str, reason: str, delay_ms: int, _last: Any | None):
+    async def _on_llm_retry(attempt: int, error_class: str, reason: str, delay_ms: int, _last: Any | None) -> None:
         await telemetry.emit_retry_status(
             "llm",
             attempt=attempt,
@@ -48,9 +48,10 @@ async def run_llm_stream_with_retry(
             f"Retry LLM stream (attempt {attempt + 1}) in {delay_ms}ms [{error_class}] {reason}"
         )
 
-    return await retry_engine.run_async(
+    result: tuple[str | None, Any] = await retry_engine.run_async(
         key="llm_stream",
         operation=_collect_stream_once,
         classify_result=lambda result: classify_result_payload(result),
         on_retry=_on_llm_retry,
     )
+    return result

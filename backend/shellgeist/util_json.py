@@ -71,8 +71,8 @@ def _repair_common_llm_json(s: str) -> str:
     s = _SINGLE_QUOTE_KEY_RE.sub(r'{"\1":', s)
     s = _UNQUOTED_KEY_RE.sub(r'\1"\2":', s)
 
-    def _sq_val(m: re.Match) -> str:
-        inner = m.group(1)
+    def _sq_val(m: re.Match[str]) -> str:
+        inner: str = m.group(1)
         inner = inner.replace("\\'", "'")
         inner = inner.replace('"', '\\"')
         return ': "' + inner + '"'

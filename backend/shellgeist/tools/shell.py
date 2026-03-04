@@ -390,6 +390,7 @@ class PTYShellManager:
         sid, sid_err = _normalize_existing_session_id(session_id)
         if sid_err is not None:
             return sid_err
+        assert sid is not None
         with self._lock:
             self._collect_dead_sessions_locked()
             session = self._sessions.get(sid)
@@ -417,6 +418,7 @@ class PTYShellManager:
         sid, sid_err = _normalize_existing_session_id(session_id)
         if sid_err is not None:
             return sid_err
+        assert sid is not None
         with self._lock:
             self._collect_dead_sessions_locked()
             session = self._sessions.get(sid)
@@ -438,6 +440,7 @@ class PTYShellManager:
         sid, sid_err = _normalize_existing_session_id(session_id)
         if sid_err is not None:
             return sid_err
+        assert sid is not None
         check_cmd = _normalize_command_text(command or "")
         if not check_cmd:
             return {"ok": False, "error": "empty_command"}
@@ -515,6 +518,7 @@ class PTYShellManager:
         sid, sid_err = _normalize_existing_session_id(session_id)
         if sid_err is not None:
             return sid_err
+        assert sid is not None
         with self._lock:
             self._collect_dead_sessions_locked()
             session = self._sessions.pop(sid, None)
@@ -803,4 +807,4 @@ def run_nix_python(
         nix_cmd += " --pure"
     nix_cmd += " -p " + " ".join(shlex.quote(p) for p in package_args)
     nix_cmd += " --run " + shlex.quote(cmd)
-    return run_shell(nix_cmd, root=root)
+    return str(run_shell(nix_cmd, root=root))
