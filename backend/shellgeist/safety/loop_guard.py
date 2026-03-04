@@ -10,9 +10,10 @@ from typing import Any
 
 @dataclass
 class LoopGuardConfig:
-    warn_threshold: int = 3
-    block_threshold: int = 5
+    warn_threshold: int = 2
+    block_threshold: int = 3
     outcome_block_threshold: int = 3
+    success_repeat_threshold: int = 2
     global_call_limit: int = 60
     history_size: int = 16
 
@@ -46,6 +47,7 @@ class LoopGuard:
         self.total_calls = 0
         self.call_counts: dict[str, int] = {}
         self.outcome_counts: dict[str, int] = {}
+        self.success_counts: dict[str, int] = {}
         self.blocked_call_hashes: set[str] = set()
         self.recent_calls: deque[str] = deque(maxlen=self.config.history_size)
 
@@ -101,7 +103,18 @@ class LoopGuard:
 
     def record_outcome(self, tool_name: str, args: dict[str, Any], result: str) -> tuple[bool, str]:
         call_hash = self._hash_call(tool_name, args)
+
+        # Track successful identical calls — block after success_repeat_threshold
         if not is_failed_result(result):
+            s_count = self.success_counts.get(call_hash, 0) + 1
+            self.success_counts[call_hash] = s_count
+            if s_count >= self.config.success_repeat_threshold:
+                self.blocked_call_hashes.add(call_hash)
+                return (
+                    True,
+                    f"BLOCKED_SUCCESS_REPEAT: {tool_name} already succeeded with these exact parameters. "
+                    "The action is DONE — do NOT call it again. Move on to the next step or say Status: DONE.",
+                )
             return (False, "")
 
         outcome_hash = self._hash_outcome(call_hash, result)

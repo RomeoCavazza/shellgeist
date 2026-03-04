@@ -143,10 +143,7 @@ def _looks_like_final_response(content: str) -> bool:
         "voilà", "c'est fait",
     )
     has_completion = any(m in lower for m in completion_markers)
-    if has_completion and len(non_thought) >= 3:
-        return True
-
-    return False
+    return bool(has_completion and len(non_thought) >= 3)
 
 
 def decide_no_tool_action(

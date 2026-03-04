@@ -93,9 +93,7 @@ def missing_required_args(func_name: str, args: dict[str, Any]) -> list[str]:
         # Accept file/path interchangeably
         if value is None and key in ("file", "path"):
             value = args.get("path") if key == "file" else args.get("file")
-        if value is None:
-            missing.append(key)
-        elif isinstance(value, str) and not value.strip() and key not in allow_empty:
+        if value is None or isinstance(value, str) and not value.strip() and key not in allow_empty:
             missing.append(key)
     return missing
 

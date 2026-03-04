@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import queue
 import threading
 import urllib.error
@@ -13,6 +12,8 @@ from typing import Any
 
 from shellgeist.config import (
     debug_enabled as _debug_enabled,
+)
+from shellgeist.config import (
     http_timeout,
     models_list_timeout,
     models_probe_timeout,

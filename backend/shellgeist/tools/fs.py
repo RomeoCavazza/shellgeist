@@ -11,7 +11,6 @@ from pydantic import BaseModel
 from shellgeist.tools.base import registry
 from shellgeist.util_path import resolve_repo_path
 
-
 # Directories always excluded from recursive listings / searches
 _IGNORED_DIRS = frozenset({
     ".git", "__pycache__", "node_modules", ".venv", "venv",
@@ -96,6 +95,13 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
             old_text = p.read_text(encoding="utf-8", errors="replace")
         except Exception:
             pass
+
+    # Skip write if file already has the exact same content
+    if existed and old_text == content:
+        return (
+            f"NO_CHANGE: {target} already contains this exact content. "
+            "Do NOT call write_file again. Proceed to the next step or say Status: DONE."
+        )
 
     p.write_text(content, encoding="utf-8")
 

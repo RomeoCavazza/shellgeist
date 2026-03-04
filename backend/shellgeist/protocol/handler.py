@@ -7,7 +7,6 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 
 from shellgeist.protocol.models import SGRequest, SGResult
-from shellgeist.safety.blocked import is_blocked
 from shellgeist.tools.coder import apply_edit, apply_full_replace, edit_plan
 from shellgeist.util_git import git
 

@@ -5,7 +5,7 @@ import difflib
 import os
 import re
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +18,6 @@ from shellgeist.tools.base import registry
 from shellgeist.tools.normalize import (
     maybe_unescape_llm_string,
     salvage_fulltext,
-    strip_fences,
 )
 from shellgeist.util_git import git
 from shellgeist.util_json import loads_obj

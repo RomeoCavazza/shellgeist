@@ -18,6 +18,7 @@ from shellgeist.agent.orchestrator import (
     extract_plaintext_tool_calls,
 )
 from shellgeist.agent.state import AgentRunState
+from shellgeist.config import debug_enabled as _debug_enabled
 from shellgeist.io import (
     TelemetryEmitter,
     UIEventEmitter,
@@ -41,7 +42,6 @@ from shellgeist.session.ops import (
     load_recent_history,
     save_assistant_message,
 )
-from shellgeist.config import debug_enabled as _debug_enabled
 from shellgeist.tools import load_tools, registry
 from shellgeist.tools.executor import execute_tool_call
 from shellgeist.tools.parser import parse_xml_tool_use as _parse_xml_tool_use
