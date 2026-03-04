@@ -30,11 +30,11 @@ local function define_highlights()
   if hl_defined then return end
   hl_defined = true
   local hl = api.nvim_set_hl
-  hl(0, "SGConflictCurrent",       { bg = "#2e1a1a" })           -- old (ours) — red tint
-  hl(0, "SGConflictCurrentLabel",  { bg = "#3d1f1f", bold = true })
-  hl(0, "SGConflictIncoming",      { bg = "#1a2e2a" })           -- new (theirs) — green tint
-  hl(0, "SGConflictIncomingLabel", { bg = "#1f3d2f", bold = true })
-  hl(0, "SGConflictMiddle",        { fg = "#60a5fa", bold = true })
+  hl(0, "SGConflictCurrent",       { bg = "#3a2a2a", ctermbg = 52 })
+  hl(0, "SGConflictCurrentLabel",  { bg = "#3d1f1f", fg = "#e06c75", ctermbg = 52, ctermfg = 168, bold = true })
+  hl(0, "SGConflictIncoming",      { bg = "#2a3a2a", ctermbg = 22 })
+  hl(0, "SGConflictIncomingLabel", { bg = "#1f3d2f", fg = "#98c379", ctermbg = 22, ctermfg = 114, bold = true })
+  hl(0, "SGConflictMiddle",        { fg = "#56b6c2", ctermfg = 73, bold = true })
 end
 
 -- ── conflict position tracking ─────────────────────────────────────────

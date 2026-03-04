@@ -297,7 +297,7 @@ function M.run_agent(goal)
 
             if file_rel ~= "" then
               sidebar.set_thinking(false)
-              sidebar.append_text("📝 Review pending: " .. file_rel .. " — co=original ct=accept ca=all cr=reject", "action", meta)
+              sidebar.append_text("📝 Review: " .. file_rel, "action", meta)
 
               vim.schedule(function()
                 local filepath = file_rel
@@ -311,17 +311,19 @@ function M.run_agent(goal)
                     if current_reply_fn then
                       if resolved_content then
                         current_reply_fn({ cmd = "review_decision", approved = true, content = resolved_content })
-                        sidebar.append_text("✓ Review approved: " .. file_rel, "info", {})
+                        sidebar.append_text("✓ Approved: " .. file_rel, "observation", { file = file_rel })
                       else
                         current_reply_fn({ cmd = "review_decision", approved = false })
-                        sidebar.append_text("✗ Review rejected: " .. file_rel, "error", {})
+                        sidebar.append_text("✗ Rejected: " .. file_rel, "error", {})
                       end
                     end
                     sidebar.set_thinking(true)
                   end,
                 })
 
-                if not ok_c then
+                if ok_c then
+                  sidebar.append_text("co=keep  ct=accept  ca=all  cr=reject  ]x/[x=nav", "code", { file = file_rel })
+                else
                   sidebar.append_text("Review display failed: " .. tostring(err_c), "error", {})
                   -- Auto-reject on display failure
                   if current_reply_fn then
@@ -343,21 +345,7 @@ function M.run_agent(goal)
             sidebar.set_thinking(false)
             sidebar.append_text("⏸ Approval needed: " .. tool, "action", meta)
             sidebar.append_text(args_str, "code", meta)
-
-            vim.ui.select({ "✓ Approve", "✗ Reject" }, {
-              prompt = "Execute " .. tool .. "?",
-            }, function(choice)
-              local approved = choice ~= nil and choice:find("Approve") ~= nil
-              if current_reply_fn then
-                current_reply_fn({ cmd = "approval_response", approved = approved })
-              end
-              if approved then
-                sidebar.append_text("✓ Approved", "info", {})
-              else
-                sidebar.append_text("✗ Rejected", "error", {})
-              end
-              sidebar.set_thinking(true)
-            end)
+            sidebar.append_text("", "approval_prompt", { tool = tool, reply_fn = current_reply_fn })
             return true
           end
 

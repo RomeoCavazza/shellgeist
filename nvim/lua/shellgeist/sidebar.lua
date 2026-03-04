@@ -64,33 +64,37 @@ local function define_highlights()
   local hl = vim.api.nvim_set_hl
   -- Chrome
   hl(0, "SGBorder",       { fg = "#3b82f6", ctermfg = 69 })
-  hl(0, "SGTitle",        { fg = "#e2e8f0", bg = "#1e40af", ctermfg = 255, ctermbg = 25, bold = true })
-  -- User / response
-  hl(0, "SGUser",         { fg = "#93c5fd", ctermfg = 117, bold = true })
-  hl(0, "SGUserBody",     { fg = "#e2e8f0", ctermfg = 254 })
-  hl(0, "SGResponse",     { fg = "#60a5fa", ctermfg = 75, bold = true })
-  hl(0, "SGResponseBody", { fg = "#e2e8f0", ctermfg = 254 })
+  hl(0, "SGTitle",        { fg = "#1e222a", bg = "#98c379", ctermfg = 235, ctermbg = 114, bold = true })
+  -- User
+  hl(0, "SGUser",         { fg = "#98c379", ctermfg = 114, bold = true })
+  hl(0, "SGUserBody",     { fg = "#abb2bf", ctermfg = 249 })
+  -- Response
+  hl(0, "SGResponse",     { fg = "#61afef", ctermfg = 75, bold = true })
+  hl(0, "SGResponseBody", { fg = "#dcdfe4", ctermfg = 254 })
   -- Thinking
-  hl(0, "SGThinking",     { fg = "#94a3b8", ctermfg = 248, italic = true })
+  hl(0, "SGThinking",     { fg = "#c678dd", ctermfg = 176, italic = true })
   -- Tool cards
-  hl(0, "SGCardBorder",   { fg = "#475569", ctermfg = 240 })
-  hl(0, "SGCardAction",   { fg = "#e2e8f0", bg = "#1e40af", ctermfg = 255, ctermbg = 25, bold = true })
-  hl(0, "SGCardCode",     { fg = "#e2e8f0", bg = "#4338ca", ctermfg = 255, ctermbg = 56, bold = true })
-  hl(0, "SGCardResult",   { fg = "#e2e8f0", bg = "#0369a1", ctermfg = 255, ctermbg = 31, bold = true })
-  hl(0, "SGCardError",    { fg = "#e2e8f0", bg = "#b91c1c", ctermfg = 255, ctermbg = 124, bold = true })
-  hl(0, "SGCardBody",     { fg = "#cbd5e1", ctermfg = 252 })
-  -- Diff inline (green/red — standard)
-  hl(0, "SGDiffAdd",      { fg = "#4ade80", bg = "#1a2e1a", ctermfg = 114, ctermbg = 22 })
-  hl(0, "SGDiffDel",      { fg = "#f87171", bg = "#2e1a1a", ctermfg = 210, ctermbg = 52 })
-  hl(0, "SGDiffHdr",      { fg = "#60a5fa", ctermfg = 75 })
-  -- Success line
-  hl(0, "SGSuccess",      { fg = "#4ade80", ctermfg = 114, bold = true })
+  hl(0, "SGCardBorder",   { fg = "#5c6370", ctermfg = 241 })
+  hl(0, "SGCardAction",   { fg = "#1e222a", bg = "#56b6c2", ctermfg = 235, ctermbg = 73, bold = true })
+  hl(0, "SGCardCode",     { fg = "#1e222a", bg = "#61afef", ctermfg = 235, ctermbg = 75, bold = true })
+  hl(0, "SGCardResult",   { fg = "#1e222a", bg = "#d19a66", ctermfg = 235, ctermbg = 173, bold = true })
+  hl(0, "SGCardError",    { fg = "#1e222a", bg = "#e06c75", ctermfg = 235, ctermbg = 168, bold = true })
+  hl(0, "SGCardBody",     { fg = "#abb2bf", ctermfg = 249 })
+  -- Diff inline
+  hl(0, "SGDiffAdd",      { fg = "#98c379", bg = "#2a3a2a", ctermfg = 114, ctermbg = 22 })
+  hl(0, "SGDiffDel",      { fg = "#e06c75", bg = "#3a2a2a", ctermfg = 168, ctermbg = 52 })
+  hl(0, "SGDiffHdr",      { fg = "#56b6c2", ctermfg = 73, bold = true })
+  -- Success
+  hl(0, "SGSuccess",      { fg = "#98c379", ctermfg = 114, bold = true })
   -- Error
-  hl(0, "SGError",        { fg = "#ef4444", ctermfg = 196, bold = true })
+  hl(0, "SGError",        { fg = "#e06c75", ctermfg = 168, bold = true })
   -- Spinner
-  hl(0, "SGSpinner",      { fg = "#3b82f6", ctermfg = 69, bold = true })
+  hl(0, "SGSpinner",      { fg = "#c678dd", ctermfg = 176, bold = true })
+  -- Approval prompt
+  hl(0, "SGApproval",     { fg = "#1e222a", bg = "#e5c07b", ctermfg = 235, ctermbg = 180, bold = true })
+  hl(0, "SGApprovalKey",  { fg = "#e5c07b", ctermfg = 180, bold = true })
   -- Body default
-  hl(0, "SGBody",         { fg = "#e2e8f0", ctermfg = 254 })
+  hl(0, "SGBody",         { fg = "#abb2bf", ctermfg = 249 })
 end
 
 -- Re-apply highlights when colorscheme changes (Neovim clears them)
@@ -356,6 +360,61 @@ local function render_error(text)
   scroll_bottom()
 end
 
+--- Render an inline approval prompt with a/r keys.
+--- @param meta table  must contain tool and reply_fn
+local function render_approval_prompt(meta)
+  local tool = meta.tool or "?"
+  local reply_fn = meta.reply_fn
+
+  local prompt_line = "  [a] approve   [r] reject   (" .. tool .. ")"
+  local start = buf_append({ prompt_line, "" })
+  if start then
+    hl_range(start, 1, "SGApproval")
+  end
+  scroll_bottom()
+
+  -- Set temporary buffer keymaps for a/r
+  if not M.chat or not buf_valid(M.chat.bufnr) then return end
+  local bufnr = M.chat.bufnr
+
+  local function cleanup_maps()
+    pcall(vim.keymap.del, "n", "a", { buffer = bufnr })
+    pcall(vim.keymap.del, "n", "r", { buffer = bufnr })
+  end
+
+  local responded = false
+
+  vim.keymap.set("n", "a", function()
+    if responded then return end
+    responded = true
+    cleanup_maps()
+    -- Replace the prompt line with approved status
+    if start and buf_valid(bufnr) then
+      pcall(vim.api.nvim_buf_set_lines, bufnr, start, start + 1, false, { "  ✓ Approved" })
+      hl_range(start, 1, "SGSuccess")
+    end
+    if reply_fn then reply_fn({ cmd = "approval_response", approved = true }) end
+    M.set_thinking(true)
+  end, { buffer = bufnr, silent = true, noremap = true, desc = "SG: approve" })
+
+  vim.keymap.set("n", "r", function()
+    if responded then return end
+    responded = true
+    cleanup_maps()
+    if start and buf_valid(bufnr) then
+      pcall(vim.api.nvim_buf_set_lines, bufnr, start, start + 1, false, { "  ✗ Rejected" })
+      hl_range(start, 1, "SGError")
+    end
+    if reply_fn then reply_fn({ cmd = "approval_response", approved = false }) end
+    M.set_thinking(true)
+  end, { buffer = bufnr, silent = true, noremap = true, desc = "SG: reject" })
+
+  -- Focus the chat window so user can press a/r immediately
+  if M.chat and win_valid(M.chat.winid) then
+    pcall(vim.api.nvim_set_current_win, M.chat.winid)
+  end
+end
+
 -- ── NUI management ─────────────────────────────────────────────────────
 
 local function set_prompt_top(text)
@@ -604,6 +663,8 @@ function M.append_text(text, msg_type, meta)
     render_observation(text, meta)
   elseif msg_type == "error" then
     render_error(text)
+  elseif msg_type == "approval_prompt" then
+    render_approval_prompt(meta)
   end
 end
 
