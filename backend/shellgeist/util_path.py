@@ -11,8 +11,14 @@ def resolve_repo_path(root: Path, rel: str) -> Path:
     consistent security semantics (no path-escape, no ``~`` expansion
     inside the tool layer).
     """
-    if not rel or rel.startswith(("/", "~")):
-        raise ValueError("invalid_path")
+    if not rel:
+        raise ValueError("invalid_path: empty path")
+    if rel.startswith("~") or rel.startswith("/"):
+        raise ValueError(
+            f"invalid_path: '{rel}' is outside the project. "
+            "Tools can only access files inside the repo root. "
+            "Use run_shell with 'cat', 'sed', or 'cp' to read/edit files outside the project."
+        )
     p = (root / rel).resolve()
     try:
         p.relative_to(root.resolve())

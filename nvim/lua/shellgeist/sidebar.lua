@@ -456,9 +456,10 @@ function M.open()
         highlight = "SGBorder",
         text = { top = "  ShellGeist ", top_align = "center" },
       },
-      buf_options = { filetype = "markdown", buftype = "nofile" },
+      buf_options = { filetype = "shellgeist", buftype = "nofile" },
       win_options = {
         wrap = true,
+        linebreak = true,
         winhighlight = "Normal:SGBody,FloatBorder:SGBorder",
       },
     })

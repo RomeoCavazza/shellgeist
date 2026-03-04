@@ -39,9 +39,13 @@ class ToolCallQueue:
 # Map model-hallucinated class names to actual tool names
 _CLASS_TO_TOOL: dict[str, str] = {
     "shellcommandinput": "run_shell",
+    "runshellinput": "run_shell",
+    "runshellcommand": "run_shell",
+    "runcommand": "run_shell",
     "readfileinput": "read_file",
     "writefileinput": "write_file",
     "listfilesinput": "list_files",
+    "listdirectoryinput": "list_files",
     "findfilesinput": "find_files",
     "editfileinput": "edit_file",
     "run_shell": "run_shell",

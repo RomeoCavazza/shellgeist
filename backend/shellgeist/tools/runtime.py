@@ -65,6 +65,14 @@ def normalize_tool_args(
     if "path" not in args and isinstance(args.get("file"), str):
         args["path"] = args.get("file")
 
+    # LLM sends "path" when list_files / find_files expect "directory"
+    if func_name in ("list_files", "find_files") and "directory" not in args:
+        for alias in ("path", "dir", "folder"):
+            value = args.get(alias)
+            if isinstance(value, str) and value.strip():
+                args["directory"] = value
+                break
+
     if func_name in SHELL_SESSION_TOOLS and last_shell_session_id:
         sid = str(args.get("session_id") or "").strip()
         if not sid or "{" in sid or "}" in sid:
