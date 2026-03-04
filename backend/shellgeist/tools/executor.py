@@ -64,6 +64,31 @@ def _shell_creates_file(cmd: str) -> bool:
     return bool(_FILE_CREATION_RE.search(cmd))
 
 
+def _shell_self_redirects(cmd: str) -> bool:
+    """Return True if a shell command reads and writes the same file.
+
+    Patterns like ``sort file > file`` or ``tac file > file`` silently
+    empty the file because the shell truncates the output before the
+    reader finishes.
+    """
+    # Find output redirection targets (> file or >> file)
+    redirect_targets = re.findall(r'>{1,2}\s*([^\s;|&]+)', cmd)
+    if not redirect_targets:
+        return False
+    # Check if any redirected target also appears as an input earlier
+    for target in redirect_targets:
+        target_clean = target.strip("\"'")
+        # Look for the target used as a positional argument (not after > or |)
+        # Simple heuristic: target appears before the redirect
+        before_redirect = cmd.split('>' + target)[0] if '>' + target in cmd else cmd.split('>')[0]
+        if target_clean in before_redirect.split():
+            return True
+        # Also check quoted forms
+        if f'"{target_clean}"' in before_redirect or f"'{target_clean}'" in before_redirect:
+            return True
+    return False
+
+
 def _targets_project_dir(cmd: str, root: str) -> bool:
     """Return True if the file path in a shell write targets the project directory.
 
@@ -294,6 +319,13 @@ async def execute_tool_call(
 
         if func_name in ("run_shell", "exec_shell_session"):
             cmd = str(call_args.get("command") or "")
+            if _shell_self_redirects(cmd):
+                await log("Blocked: shell self-redirect (reads and writes same file)", type="error")
+                return (
+                    "INVALID_ACTION: This command reads and writes the same file via shell "
+                    "redirection (e.g. sort file > file), which SILENTLY empties the file. "
+                    "Use read_file to get the content, transform it, then write_file to save."
+                )
             if _shell_creates_file(cmd) and _targets_project_dir(cmd, root):
                 await log("Blocked: shell file creation detected, use write_file instead", type="error")
                 return (

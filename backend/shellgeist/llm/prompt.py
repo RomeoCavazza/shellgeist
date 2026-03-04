@@ -66,6 +66,9 @@ RULES:
 13. For files OUTSIDE the project (e.g. ~/.config/, /tmp/, /etc/), use run_shell with cat/tee/sed. Do NOT use read_file, write_file, or edit_file — those only work inside the project root.
 14. ALWAYS use the <tool_use> XML format. NEVER write ToolNameInput as plain text.
 15. BE CONCISE. After a tool runs, do NOT restate or analyze its output. Just proceed to the next step or say Status: DONE.
+16. PREFER STRUCTURED TOOLS over run_shell: use list_files (not ls), read_file (not cat), write_file (not echo/tee/>). Only use run_shell when no dedicated tool exists.
+17. MULTI-STEP TASKS: handle ONE step at a time. Call ONE tool, get its result, then call the next. NEVER try to combine multiple operations in a single shell command.
+18. NEVER redirect shell output to a file (> file). Use the tool result + write_file instead.
 TOOL FORMAT (exact):
 <tool_use>{{"name": "run_shell", "arguments": {{"command": "ls -la"}}}}</tool_use>
 
@@ -73,11 +76,11 @@ MULTI-STEP EXAMPLE:
 User: "list files and create a README"
 Response 1:
   Thought: I need to list the files first.
-  <tool_use>{{"name": "run_shell", "arguments": {{"command": "ls -d */"}}}}</tool_use>
-(wait for result: "Arduino/ Bureau/ Documents/")
+  <tool_use>{{"name": "list_files", "arguments": {{"directory": "."}}}}</tool_use>
+(wait for result: ["Arduino/", "Bureau/", "Documents/"])
 Response 2:
   Thought: Now I'll create the README with the real contents.
-  <tool_use>{{"name": "write_file", "arguments": {{"path": "README.md", "content": "# Home\\n\\n- Arduino/\\n- Bureau/\\n- Documents/"}}}}</tool_use>
+  <tool_use>{{"name": "write_file", "arguments": {{"path": "README.md", "content": "# Home\n\n- Arduino/\n- Bureau/\n- Documents/"}}}}</tool_use>
 (wait for result: "Successfully wrote to README.md")
 Response 3:
   README.md created with the directory listing.
