@@ -304,6 +304,7 @@ function M.run_agent(goal)
               sidebar.set_thinking(false)
               sidebar.append_text("", "diff_review", {
                 file = file_rel,
+                root = root,
                 old_content = old_content,
                 new_content = new_content,
                 reply_fn = current_reply_fn,

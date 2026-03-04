@@ -72,7 +72,7 @@ local function define_highlights()
   hl(0, "SGResponse",     { fg = "#61afef", ctermfg = 75, bold = true })
   hl(0, "SGResponseBody", { fg = "#dcdfe4", ctermfg = 254 })
   -- Thinking
-  hl(0, "SGThinking",     { fg = "#c678dd", ctermfg = 176, italic = true })
+  hl(0, "SGThinking",     { fg = "#7f848e", ctermfg = 243, italic = true })
   -- Tool cards
   hl(0, "SGCardBorder",   { fg = "#5c6370", ctermfg = 241 })
   hl(0, "SGCardAction",   { fg = "#1e222a", bg = "#56b6c2", ctermfg = 235, ctermbg = 73, bold = true })
@@ -434,7 +434,7 @@ local function render_diff_review(meta)
   end
 
   -- Accept / reject prompt
-  local prompt_line = "  [a] accept   [r] reject   (" .. file .. ")"
+  local prompt_line = "  [o] open   [a] accept   [r] reject   (" .. file .. ")"
   local prompt_start = buf_append({ prompt_line, "" })
   if prompt_start then
     hl_range(prompt_start, 1, "SGApproval")
@@ -447,9 +447,40 @@ local function render_diff_review(meta)
   local responded = false
 
   local function cleanup()
+    pcall(vim.keymap.del, "n", "o", { buffer = bufnr })
     pcall(vim.keymap.del, "n", "a", { buffer = bufnr })
     pcall(vim.keymap.del, "n", "r", { buffer = bufnr })
   end
+
+  -- [o] open: open file with conflict markers for inline resolution
+  vim.keymap.set("n", "o", function()
+    if responded then return end
+    responded = true
+    cleanup()
+    if prompt_start and buf_valid(bufnr) then
+      pcall(vim.api.nvim_buf_set_lines, bufnr, prompt_start, prompt_start + 1, false, { "  ↗ Opened in editor" })
+      hl_range(prompt_start, 1, "SGCardBody")
+    end
+    -- Resolve absolute file path
+    local filepath = file
+    local file_root = meta.root or ""
+    if file_root ~= "" and not filepath:match("^/") then
+      filepath = file_root .. "/" .. filepath
+    end
+    -- Open with conflict markers via conflict.lua
+    local conflict = require("shellgeist.conflict")
+    conflict.show_inline(filepath, old_content, new_content, {
+      on_complete = function(resolved_content)
+        -- resolved_content is nil if rejected, or the final content string
+        if resolved_content then
+          if reply_fn then reply_fn({ cmd = "review_decision", approved = true, content = resolved_content }) end
+        else
+          if reply_fn then reply_fn({ cmd = "review_decision", approved = false }) end
+        end
+        M.set_thinking(true)
+      end,
+    })
+  end, { buffer = bufnr, silent = true, noremap = true, desc = "SG: open in editor" })
 
   vim.keymap.set("n", "a", function()
     if responded then return end
