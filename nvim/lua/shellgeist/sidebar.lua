@@ -63,35 +63,44 @@ end
 local function define_highlights()
   local hl = vim.api.nvim_set_hl
   -- Chrome
-  hl(0, "SGBorder",       { fg = "#3b82f6" })
-  hl(0, "SGTitle",        { fg = "#e2e8f0", bg = "#1e40af", bold = true })
+  hl(0, "SGBorder",       { fg = "#3b82f6", ctermfg = 69 })
+  hl(0, "SGTitle",        { fg = "#e2e8f0", bg = "#1e40af", ctermfg = 255, ctermbg = 25, bold = true })
   -- User / response
-  hl(0, "SGUser",         { fg = "#93c5fd", bold = true })
-  hl(0, "SGUserBody",     { fg = "#e2e8f0" })
-  hl(0, "SGResponse",     { fg = "#60a5fa", bold = true })
-  hl(0, "SGResponseBody", { fg = "#e2e8f0" })
+  hl(0, "SGUser",         { fg = "#93c5fd", ctermfg = 117, bold = true })
+  hl(0, "SGUserBody",     { fg = "#e2e8f0", ctermfg = 254 })
+  hl(0, "SGResponse",     { fg = "#60a5fa", ctermfg = 75, bold = true })
+  hl(0, "SGResponseBody", { fg = "#e2e8f0", ctermfg = 254 })
   -- Thinking
-  hl(0, "SGThinking",     { fg = "#94a3b8", italic = true })
+  hl(0, "SGThinking",     { fg = "#94a3b8", ctermfg = 248, italic = true })
   -- Tool cards
-  hl(0, "SGCardBorder",   { fg = "#475569" })
-  hl(0, "SGCardAction",   { fg = "#e2e8f0", bg = "#1e40af", bold = true })
-  hl(0, "SGCardCode",     { fg = "#e2e8f0", bg = "#4338ca", bold = true })
-  hl(0, "SGCardResult",   { fg = "#e2e8f0", bg = "#0369a1", bold = true })
-  hl(0, "SGCardError",    { fg = "#e2e8f0", bg = "#b91c1c", bold = true })
-  hl(0, "SGCardBody",     { fg = "#cbd5e1" })
+  hl(0, "SGCardBorder",   { fg = "#475569", ctermfg = 240 })
+  hl(0, "SGCardAction",   { fg = "#e2e8f0", bg = "#1e40af", ctermfg = 255, ctermbg = 25, bold = true })
+  hl(0, "SGCardCode",     { fg = "#e2e8f0", bg = "#4338ca", ctermfg = 255, ctermbg = 56, bold = true })
+  hl(0, "SGCardResult",   { fg = "#e2e8f0", bg = "#0369a1", ctermfg = 255, ctermbg = 31, bold = true })
+  hl(0, "SGCardError",    { fg = "#e2e8f0", bg = "#b91c1c", ctermfg = 255, ctermbg = 124, bold = true })
+  hl(0, "SGCardBody",     { fg = "#cbd5e1", ctermfg = 252 })
   -- Diff inline (green/red — standard)
-  hl(0, "SGDiffAdd",      { fg = "#4ade80", bg = "#1a2e1a" })
-  hl(0, "SGDiffDel",      { fg = "#f87171", bg = "#2e1a1a" })
-  hl(0, "SGDiffHdr",      { fg = "#60a5fa" })
+  hl(0, "SGDiffAdd",      { fg = "#4ade80", bg = "#1a2e1a", ctermfg = 114, ctermbg = 22 })
+  hl(0, "SGDiffDel",      { fg = "#f87171", bg = "#2e1a1a", ctermfg = 210, ctermbg = 52 })
+  hl(0, "SGDiffHdr",      { fg = "#60a5fa", ctermfg = 75 })
   -- Success line
-  hl(0, "SGSuccess",      { fg = "#4ade80", bold = true })
+  hl(0, "SGSuccess",      { fg = "#4ade80", ctermfg = 114, bold = true })
   -- Error
-  hl(0, "SGError",        { fg = "#ef4444", bold = true })
+  hl(0, "SGError",        { fg = "#ef4444", ctermfg = 196, bold = true })
   -- Spinner
-  hl(0, "SGSpinner",      { fg = "#3b82f6", bold = true })
+  hl(0, "SGSpinner",      { fg = "#3b82f6", ctermfg = 69, bold = true })
   -- Body default
-  hl(0, "SGBody",         { fg = "#e2e8f0" })
+  hl(0, "SGBody",         { fg = "#e2e8f0", ctermfg = 254 })
 end
+
+-- Re-apply highlights when colorscheme changes (Neovim clears them)
+vim.api.nvim_create_autocmd("ColorScheme", {
+  group = vim.api.nvim_create_augroup("ShellGeistHighlights", { clear = true }),
+  callback = define_highlights,
+})
+
+-- Define highlights immediately at load time
+define_highlights()
 
 -- ── buffer helpers ─────────────────────────────────────────────────────
 
@@ -558,9 +567,13 @@ function M.append_text(text, msg_type, meta)
     local nl = chunk:find("\n", 1, true)
     if nl then
       pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_idx, last_idx + 1, false, { last_line .. chunk:sub(1, nl - 1) })
-      buf_append(vim.split(chunk:sub(nl + 1), "\n", { plain = true }))
+      hl_range(last_idx, 1, "SGResponseBody")
+      local new_lines = vim.split(chunk:sub(nl + 1), "\n", { plain = true })
+      local new_start = buf_append(new_lines)
+      if new_start then hl_range(new_start, #new_lines, "SGResponseBody") end
     else
       pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_idx, last_idx + 1, false, { last_line .. chunk })
+      hl_range(last_idx, 1, "SGResponseBody")
     end
     scroll_bottom()
     return

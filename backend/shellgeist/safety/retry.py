@@ -200,7 +200,7 @@ def classify_exception(exc: Exception) -> tuple[RetryClass, str]:
 
 def classify_result_payload(result: Any, *, tool_name: str | None = None) -> tuple[RetryClass | None, str]:
     # Empty list/dict from tools like find_files/list_files is a valid result, not transient
-    if isinstance(result, (list, dict)):
+    if isinstance(result, list | dict):
         return None, ""
     text = str(result or "").strip()
     if not text:

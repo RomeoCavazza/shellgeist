@@ -28,7 +28,7 @@ def _normalize_content(content: Any) -> tuple[str, bool]:
         return content, False
     if content is None:
         return "", True
-    if isinstance(content, (dict, list)):
+    if isinstance(content, dict | list):
         return json.dumps(content, ensure_ascii=False), True
     return str(content), True
 
