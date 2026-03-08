@@ -38,6 +38,7 @@ M._mode = "auto"  -- "auto" or "review"
 
 M._last_root = nil
 M._last_session_id = nil
+M._conversation_fresh = false  -- true when sidebar just opened: next agent_task sends fresh_conversation
 
 function M.setup(opts)
   M._cfg = vim.tbl_deep_extend("force", M._cfg, opts or {})
@@ -57,6 +58,13 @@ function M.get_last_context()
     session_id = M._last_session_id,
     mode = M.get_mode(),
   }
+end
+
+--- Update last root/session from current project (e.g. when sidebar is opened without running agent).
+function M.set_context_from_project()
+  local root = project_root()
+  M._last_root = root
+  M._last_session_id = root and vim.fn.sha256(root) or nil
 end
 
 local function handle_result(ev, on_ok)
@@ -235,11 +243,9 @@ function M.run_agent(goal)
         local session_id = vim.fn.sha256(root)
         M._last_root = root
         M._last_session_id = session_id
-        M.reload_history(session_id, {
-          on_done = function()
-            sidebar.focus_prompt()
-          end,
-        })
+        M._conversation_fresh = true
+        rpc.request(M._cfg.socket, { cmd = "reset_session", session_id = session_id }, function() end)
+        sidebar.focus_prompt()
       end)
       return
     end
@@ -267,6 +273,10 @@ function M.run_agent(goal)
       if not ok_open then
         notify("sidebar.open failed: " .. tostring(err_open), vim.log.levels.ERROR)
         return
+      end
+      if not was_open then
+        M._conversation_fresh = true
+        rpc.request(M._cfg.socket, { cmd = "reset_session", session_id = session_id }, function() end)
       end
 
       local function run_agent()
@@ -405,7 +415,16 @@ function M.run_agent(goal)
         local retried = false
 
         local function do_agent_request()
-          rpc.request(M._cfg.socket, { cmd = "agent_task", root = root, goal = goal, session_id = session_id, mode = agent_mode }, function(ev, reply)
+          local fresh = M._conversation_fresh
+          if fresh then M._conversation_fresh = false end
+          rpc.request(M._cfg.socket, {
+            cmd = "agent_task",
+            root = root,
+            goal = goal,
+            session_id = session_id,
+            mode = agent_mode,
+            fresh_conversation = fresh,
+          }, function(ev, reply)
             if ev.status == "eof" then return end
 
             -- Auto-reconnect: if the daemon crashed mid-flight, respawn and retry once

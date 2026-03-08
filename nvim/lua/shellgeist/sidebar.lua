@@ -311,8 +311,16 @@ end
 local function render_observation(text, meta)
   local raw = sanitize(text)
   local is_diff = is_diff_content(raw)
-  local is_err = raw:lower():find("^error") ~= nil or raw:lower():find("validation failed") ~= nil
-  local is_succ = is_success_line(raw)
+  -- Explicit success/failure from backend takes precedence over content heuristics
+  local meta_success = (meta and meta.success ~= nil) and meta.success
+  local is_err = (meta_success == false)
+      or raw:lower():find("^error") ~= nil
+      or raw:lower():find("validation failed") ~= nil
+      or raw:lower():find("directory not found") ~= nil
+      or raw:lower():find("file not found") ~= nil
+      or raw:lower():find("access denied") ~= nil
+      or raw:lower():find("blocked_") ~= nil
+  local is_succ = (meta_success == true) or (meta_success ~= false and is_success_line(raw))
 
   -- For diffs: keep a compact card (they need multi-line)
   if is_diff then
@@ -793,6 +801,9 @@ function M.open()
     )
 
     M.layout:mount()
+    if type(sg.set_context_from_project) == "function" then
+      sg.set_context_from_project()
+    end
     M.render_welcome()
 
     -- Override <CR> AFTER mount to replace NUI's close-on-submit.
@@ -843,7 +854,8 @@ function M.render_welcome()
   table.insert(lines, "")
   pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, 0, -1, false, lines)
   pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGTitle", 0, 0, -1)
-  for _, i in ipairs({ 3, 7 }) do
+  local sep2 = math.max(3, #lines - 1)  -- bottom separator line
+  for _, i in ipairs({ 3, 7, sep2 }) do
     pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGCardBorder", i, 0, -1)
   end
   for _, i in ipairs({ 4, 5, 6 }) do
@@ -959,6 +971,43 @@ function M.append_text(text, msg_type, meta)
   if msg_type == "user" then
     render_user(text)
   elseif msg_type == "assistant" or msg_type == "response" then
+    -- When this is the final response after streaming, replace the streamed block instead of adding a duplicate
+    if meta.final and M.chat and buf_valid(M.chat.bufnr) then
+      local ok, line_count = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
+      if ok and line_count >= 2 then
+        local ok_get, line_list = pcall(vim.api.nvim_buf_get_lines, M.chat.bufnr, 0, line_count, false)
+        if ok_get and line_list and #line_list >= 2 then
+          local sep = "───────────────────────────────────────────"
+          local last_sep_idx = nil
+          local last_assistant_idx = nil
+          for i = line_count, 1, -1 do
+            local L = (line_list[i] or ""):gsub("^%s+", ""):gsub("%s+$", "")
+            if L == sep then last_sep_idx = i end
+            if (line_list[i] or ""):find("󰚩 Assistant") and last_assistant_idx == nil then
+              last_assistant_idx = i
+            end
+            if last_sep_idx and last_assistant_idx then break end
+          end
+          if last_assistant_idx and last_sep_idx and last_assistant_idx < last_sep_idx then
+            local body = sanitize(text):gsub("^%s*Thoughts?:%s*.-\n\n", ""):gsub("^%s*Status:%s*DONE%s*$", "")
+            body = vim.trim(body)
+            if body ~= "" then
+              local new_lines = { "󰚩 Assistant" }
+              for _, ln in ipairs(vim.split(body, "\n", { plain = true })) do
+                table.insert(new_lines, ln)
+              end
+              pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_assistant_idx - 1, last_sep_idx - 1, false, new_lines)
+              pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGResponse", last_assistant_idx - 1, 0, -1)
+              for j = last_assistant_idx, last_assistant_idx + #new_lines - 2 do
+                pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGResponseBody", j, 0, -1)
+              end
+              scroll_bottom()
+              return
+            end
+          end
+        end
+      end
+    end
     render_response(text)
   elseif msg_type == "thinking" or msg_type == "thought" then
     render_thinking(text)
