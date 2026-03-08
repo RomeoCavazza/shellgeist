@@ -29,7 +29,7 @@ from shellgeist.runtime.transport import UIEventEmitter
 from shellgeist.tools import load_tools, registry
 from shellgeist.tools.executor import execute_tool_call
 from shellgeist.agent.parsing.parser import parse_xml_tool_use
-from shellgeist.runtime.policy import LoopGuard, RetryEngine, RetryConfig
+from shellgeist.runtime.policy import LoopGuard, RetryEngine, RetryConfig, is_failed_result
 
 
 def _debug_log(msg: str) -> None:
@@ -108,6 +108,14 @@ class Agent:
             self.history = repaired
             
             await ui.status(True)
+
+            # Stream response tokens to UI in real-time
+            async def _on_response_chunk(delta: str) -> None:
+                await ui.emit_execution_event(
+                    "response", delta, phase="streaming",
+                    meta={"chunk": True},
+                )
+
             content, stream_report = await run_llm_stream_with_retry(
                 client=self.client,
                 model=self.model,
@@ -115,6 +123,7 @@ class Agent:
                 retry_engine=retry_engine,
                 telemetry=telemetry,
                 log_retry=_log_retry,
+                on_chunk=_on_response_chunk,
             )
             await ui.status(False)
 
@@ -154,6 +163,24 @@ class Agent:
                 func_name = tc.get("name")
                 args = tc.get("arguments", {})
 
+                # Emit rich status for each tool call
+                _STATUS_ICONS = {
+                    "read_file": "🔍", "list_files": "📂", "find_files": "🔎",
+                    "write_file": "✏️", "edit_file": "✏️",
+                    "run_shell": "🐚", "start_shell_session": "🐚",
+                    "exec_shell_session": "🐚", "get_repo_map": "🗺️",
+                }
+                icon = _STATUS_ICONS.get(func_name, "⚙️")
+                status_label = f"{icon} {func_name}"
+                if func_name in ("read_file", "write_file", "edit_file") and args.get("path"):
+                    status_label += f" {args['path']}"
+                elif func_name == "run_shell" and args.get("command"):
+                    cmd_short = args["command"][:40]
+                    status_label += f" {cmd_short}"
+                elif func_name == "list_files" and args.get("directory"):
+                    status_label += f" {args['directory']}"
+                await ui.emit_execution_event("status", status_label, phase="tool_use", meta={"thinking": True})
+
                 # Emit the tool call to the sidebar so the user can see what's happening
                 await ui.emit_execution_event("tool_call", func_name or "", phase="tool_use", meta={"tool": func_name, "args": args})
 
@@ -192,5 +219,12 @@ class Agent:
                 last_obs = _re.sub(r"</?tool_observation[^>]*>", "", content).strip()
                 break
         last_response = last_obs or logs[-1] if (last_obs or logs) else "ShellGeist: max steps reached without completing the task."
+
+        # If no tool ever succeeded and the last observation looks like a failure,
+        # surface this as an explicit error instead of a generic 'stopped' status.
+        if last_obs and not any_tool_succeeded and is_failed_result(last_obs):
+            await ui.emit_execution_event("error", last_response, phase="done", meta={"final": True})
+            return {"ok": False, "status": "failed", "logs": logs, "error": last_response}
+
         await ui.emit_execution_event("response", last_response, phase="done", meta={"final": True})
         return {"ok": True, "status": "stopped", "logs": logs}

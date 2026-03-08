@@ -7,6 +7,7 @@ M.layout = nil
 M.chat = nil
 M.prompt = nil
 M._streaming_assistant = false
+M._streaming_thinking = false
 M._current_status = "request"
 
 local chat_ns = vim.api.nvim_create_namespace("shellgeist_chat")
@@ -235,27 +236,14 @@ local function render_action(text, meta)
   local tool = (meta and meta.tool) or ""
   local file = (meta and meta.file) or ""
   local label = tool
-  if file ~= "" then label = label .. " • " .. file end
-  local body_lines = {}
-  local desc = compact(text, 200)
-  if desc ~= "" then
-    desc = desc:gsub("^Calling:%s*", "")
-    if desc ~= "" and desc ~= tool then table.insert(body_lines, desc) end
-  end
-  local card = build_card("󱔗 " .. label, body_lines, 3)
-  local start = buf_append(card)
-  if start then
-    hl_range(start, 1, "SGCardAction")
-    for i = 2, #card do
-      hl_partial(start + i - 1, 0, 4, "SGCardBorder")
-      if i < #card and card[i] and #card[i] > 4 then
-        hl_partial(start + i - 1, 4, -1, "SGCardBody")
-      else
-        hl_range(start + i - 1, 1, "SGCardBorder")
-      end
-    end
-  end
-  buf_append({ "" })
+  if file ~= "" then label = label .. " " .. file end
+  -- Compact inline: single dimmed line
+  local desc = compact(text, 120)
+  desc = desc:gsub("^Calling:%s*", "")
+  local line = "  → " .. label
+  if desc ~= "" and desc ~= tool then line = line .. "  " .. desc end
+  local start = buf_append({ line })
+  if start then hl_range(start, 1, "SGThinking") end
   scroll_bottom()
 end
 
@@ -321,42 +309,56 @@ local function is_success_line(text)
 end
 
 local function render_observation(text, meta)
-  local file = (meta and meta.file) or ""
-  local label = file ~= "" and ("󱍬 " .. file) or "󱍬 Result"
   local raw = sanitize(text)
-  local body_lines = vim.split(raw, "\n", { plain = true })
   local is_diff = is_diff_content(raw)
-  local card = build_card(label, body_lines, 30)
-  local start = buf_append(card)
-  if start then
-    hl_range(start, 1, "SGCardResult")
-    for i = 2, #card do
-      local line_idx = start + i - 1
-      local line_text = card[i] or ""
-      local content = line_text:sub(5) -- strip "│ " prefix (may be multi-byte)
-      hl_partial(line_idx, 0, 4, "SGCardBorder")
-      if i < #card and #line_text > 4 then
-        if is_diff then
-          if content:sub(1, 1) == "+" and content:sub(1, 3) ~= "+++" then
-            hl_partial(line_idx, 4, -1, "SGDiffAdd")
-          elseif content:sub(1, 1) == "-" and content:sub(1, 3) ~= "---" then
-            hl_partial(line_idx, 4, -1, "SGDiffDel")
-          elseif content:sub(1, 2) == "@@" then
-            hl_partial(line_idx, 4, -1, "SGDiffHdr")
-          else
-            hl_partial(line_idx, 4, -1, "SGCardBody")
-          end
-        elseif is_success_line(content) then
-          hl_partial(line_idx, 4, -1, "SGSuccess")
+  local is_err = raw:lower():find("^error") ~= nil or raw:lower():find("validation failed") ~= nil
+  local is_succ = is_success_line(raw)
+
+  -- For diffs: keep a compact card (they need multi-line)
+  if is_diff then
+    local body_lines = vim.split(raw, "\n", { plain = true })
+    local card = build_card("Result", body_lines, 20)
+    local start = buf_append(card)
+    if start then
+      hl_range(start, 1, "SGCardResult")
+      hl_range(start + #card - 1, 1, "SGCardBorder")
+      for i = 2, #card - 1 do
+        local line_idx = start + i - 1
+        local line_text = card[i] or ""
+        local content = line_text:sub(5)
+        hl_partial(line_idx, 0, 4, "SGCardBorder")
+        if content:sub(1, 1) == "+" and content:sub(1, 3) ~= "+++" then
+          hl_partial(line_idx, 4, -1, "SGDiffAdd")
+        elseif content:sub(1, 1) == "-" and content:sub(1, 3) ~= "---" then
+          hl_partial(line_idx, 4, -1, "SGDiffDel")
+        elseif content:sub(1, 2) == "@@" then
+          hl_partial(line_idx, 4, -1, "SGDiffHdr")
         else
           hl_partial(line_idx, 4, -1, "SGCardBody")
         end
-      else
-        hl_range(line_idx, 1, "SGCardBorder")
       end
     end
+    buf_append({ "" })
+    scroll_bottom()
+    return
   end
-  buf_append({ "" })
+
+  -- For short results: compact inline
+  local summary = compact(raw, 160)
+  local prefix, hl_group
+  if is_err then
+    prefix = "  ✗ "
+    hl_group = "SGError"
+  elseif is_succ then
+    prefix = "  ✓ "
+    hl_group = "SGSuccess"
+  else
+    prefix = "  ← "
+    hl_group = "SGCardBody"
+  end
+  local line = prefix .. summary
+  local start = buf_append({ line })
+  if start then hl_range(start, 1, hl_group) end
   scroll_bottom()
 end
 
@@ -680,6 +682,7 @@ local function reset_state()
   M.chat = nil
   M.prompt = nil
   M._streaming_assistant = false
+  M._streaming_thinking = false
   M._current_status = "request"
 end
 
@@ -812,16 +815,40 @@ end
 function M.render_welcome()
   if not M.chat or not buf_valid(M.chat.bufnr) then return end
   M._streaming_assistant = false
+  M._streaming_thinking = false
   local lines = {
     " ShellGeist",
     "",
     "Ready to assist you.",
     "───────────────────────────────────────────",
-    "",
+    "  review: [a] accept  [r] reject  [o] open",
+    "  modes:  :SGMode auto | review",
+    "  nav:    q close  <Esc> → chat",
   }
+
+  -- Show last known workspace context (root / session / mode) for quick diagnostics.
+  local ok_sg, sg = pcall(require, "shellgeist")
+  if ok_sg and sg and type(sg.get_last_context) == "function" then
+    local ctx = sg.get_last_context() or {}
+    local root = ctx.root or "(unknown root)"
+    local session = ctx.session_id or "default"
+    local mode = ctx.mode or "auto"
+    local short_session = tostring(session):sub(1, 7)
+    table.insert(lines, string.format("  root:    %s", root))
+    table.insert(lines, string.format("  session: %s", short_session))
+    table.insert(lines, string.format("  mode:    %s", mode))
+  end
+
+  table.insert(lines, "───────────────────────────────────────────")
+  table.insert(lines, "")
   pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, 0, -1, false, lines)
   pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGTitle", 0, 0, -1)
-  pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGCardBorder", 3, 0, -1)
+  for _, i in ipairs({ 3, 7 }) do
+    pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGCardBorder", i, 0, -1)
+  end
+  for _, i in ipairs({ 4, 5, 6 }) do
+    pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGThinking", i, 0, -1)
+  end
 end
 
 function M.focus_prompt()
@@ -840,8 +867,45 @@ function M.append_text(text, msg_type, meta)
   text = sanitize(text)
   meta = type(meta) == "table" and meta or {}
 
+  -- ── streaming thinking chunks ──
+  if msg_type == "thinking_chunk" then
+    local chunk = text
+    if chunk == "" then return end
+    local is_first = not M._streaming_thinking
+    if is_first then
+      M._streaming_thinking = true
+      local hdr = buf_append({ "󰋘 Thinking" })
+      if hdr then hl_range(hdr, 1, "SGThinking") end
+      buf_append({ "" })
+    end
+    local ok_count, line_count = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
+    if not ok_count then return end
+    local last_idx = line_count - 1
+    local ok_last, last_lines = pcall(vim.api.nvim_buf_get_lines, M.chat.bufnr, last_idx, last_idx + 1, false)
+    if not ok_last then return end
+    local last_line = (last_lines and last_lines[1]) or ""
+    local nl = chunk:find("\n", 1, true)
+    if nl then
+      pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_idx, last_idx + 1, false, { last_line .. chunk:sub(1, nl - 1) })
+      hl_range(last_idx, 1, "SGThinking")
+      local new_lines = vim.split(chunk:sub(nl + 1), "\n", { plain = true })
+      local new_start = buf_append(new_lines)
+      if new_start then hl_range(new_start, #new_lines, "SGThinking") end
+    else
+      pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_idx, last_idx + 1, false, { last_line .. chunk })
+      hl_range(last_idx, 1, "SGThinking")
+    end
+    scroll_bottom()
+    return
+  end
+
   -- ── streaming response chunks ──
   if msg_type == "assistant_chunk" or msg_type == "response_chunk" then
+    -- End thinking stream if active
+    if M._streaming_thinking then
+      M._streaming_thinking = false
+      buf_append({ "" })
+    end
     local chunk = text
     if chunk == "" then return end
     local is_first = not M._streaming_assistant
@@ -873,7 +937,17 @@ function M.append_text(text, msg_type, meta)
   end
 
   -- Any non-chunk type ends streaming
-  M._streaming_assistant = false
+  if M._streaming_assistant then
+    M._streaming_assistant = false
+    -- Add separator after streamed response
+    local sep = buf_append({ "───────────────────────────────────────────" })
+    if sep then hl_range(sep, 1, "SGCardBorder") end
+    buf_append({ "" })
+  end
+  if M._streaming_thinking then
+    M._streaming_thinking = false
+    buf_append({ "" })
+  end
 
   -- ── status/info → prompt border only ──
   if msg_type == "info" then

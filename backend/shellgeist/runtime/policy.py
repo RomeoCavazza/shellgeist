@@ -57,6 +57,7 @@ class LoopGuard:
         self.call_counts: dict[str, int] = {}
         self.outcome_counts: dict[str, int] = {}
         self.success_counts: dict[str, int] = {}
+        self.failure_counts: dict[str, int] = {}
         self.blocked_call_hashes: set[str] = set()
         self.recent_calls: deque[str] = deque(maxlen=self.config.history_size)
 
@@ -87,7 +88,12 @@ class LoopGuard:
     def record_outcome(self, tool_name: str, args: dict[str, Any], result: str) -> tuple[bool, str]:
         call_hash = self._hash_call(tool_name, args)
         if is_failed_result(result):
-            self.call_counts[call_hash] = max(0, self.call_counts.get(call_hash, 1) - 1)
+            # Track failure count — block after 2 identical failures
+            f_count = self.failure_counts.get(call_hash, 0) + 1
+            self.failure_counts[call_hash] = f_count
+            if f_count >= 2:
+                self.blocked_call_hashes.add(call_hash)
+                return True, f"BLOCKED_REPEAT_FAILURE: {tool_name} failed {f_count} times with same args. Stop retrying."
         else:
             s_count = self.success_counts.get(call_hash, 0) + 1
             self.success_counts[call_hash] = s_count

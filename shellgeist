@@ -22,7 +22,7 @@ fi
 # 2. Flake available? Use `nix develop`
 if [ -f "$DIR/flake.nix" ] && command -v nix >/dev/null 2>&1; then
     exec nix develop "$DIR" --command bash -c \
-        "python3 -m shellgeist.cli $(printf ' %q' "$@")"
+        "export PYTHONPATH=\"$DIR/backend\"; python3 -m shellgeist.cli $(printf ' %q' "$@")"
 fi
 
 # 3. Legacy fallback: ad-hoc nix-shell

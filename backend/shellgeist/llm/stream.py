@@ -23,6 +23,7 @@ async def run_llm_stream_with_retry(
     telemetry: Any,
     log_retry: Callable[[str], Awaitable[None]],
     debug_log: Callable[[str], None] | None = None,
+    on_chunk: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str | None, StreamReport]:
     def _dbg(message: str) -> None:
         if debug_log is not None:
@@ -39,6 +40,8 @@ async def run_llm_stream_with_retry(
             if delta.startswith("ERROR:"):
                 raise RuntimeError(delta)
             content_parts.append(delta)
+            if on_chunk:
+                await on_chunk(delta)
             _dbg(f"Chunk: {len(delta)} chars")
         _dbg("Stream finished")
         return "".join(content_parts)

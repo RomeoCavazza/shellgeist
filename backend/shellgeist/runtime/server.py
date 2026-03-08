@@ -18,11 +18,28 @@ _agent_cache: dict[str, Any] = {}
 
 
 def _resolve_root(root_str: str | None) -> Path:
+    """Resolve and validate the workspace root for a request.
+
+    Enforces that:
+    - a root is provided and exists
+    - the root is a directory
+    - the root is NOT the user's home directory
+    """
     if not root_str:
-        raise ValueError('missing_root')
+        raise ValueError("missing_root")
+
     p = Path(root_str).expanduser().resolve()
     if not p.exists() or not p.is_dir():
-        raise ValueError('invalid_root')
+        raise ValueError("invalid_root")
+
+    home = Path.home().resolve()
+    if p == home:
+        # Provide a descriptive error instead of allowing tools to run in HOME.
+        raise ValueError(
+            f"workspace_root_is_home: WORKSPACE ROOT is your HOME directory ({p}). "
+            "Open Neovim or run ShellGeist inside a project folder instead."
+        )
+
     return p
 
 

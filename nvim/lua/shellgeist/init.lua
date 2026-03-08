@@ -36,6 +36,9 @@ end
 
 M._mode = "auto"  -- "auto" or "review"
 
+M._last_root = nil
+M._last_session_id = nil
+
 function M.setup(opts)
   M._cfg = vim.tbl_deep_extend("force", M._cfg, opts or {})
 end
@@ -46,6 +49,14 @@ end
 
 function M.get_mode()
   return M._mode or "auto"
+end
+
+function M.get_last_context()
+  return {
+    root = M._last_root,
+    session_id = M._last_session_id,
+    mode = M.get_mode(),
+  }
 end
 
 local function handle_result(ev, on_ok)
@@ -135,14 +146,16 @@ end
 function M._spawn_daemon(cb)
   local socket = M._cfg.socket
   
-  -- We need the project root where the 'shellgeist' wrapper lives.
-  local wrapper = "shellgeist"
+  -- Resolve the wrapper from the plugin's own location (project root).
+  -- IMPORTANT: Do NOT use PATH first — stale copies (e.g. ~/.local/bin/shellgeist)
+  -- can resolve there and fail because $DIR/backend won't exist.
+  local plugin_path = debug.getinfo(1).source:sub(2):match("(.*/)") or ""
+  local project_path = vim.fn.fnamemodify(plugin_path .. "../../..", ":p:h")
+  local wrapper = project_path .. "/shellgeist"
   
-  -- Fallback logic for finding the wrapper if not in PATH
+  -- Fallback to PATH only if project-relative wrapper doesn't exist
   if vim.fn.executable(wrapper) == 0 then
-    local plugin_path = debug.getinfo(1).source:sub(2):match("(.*/)")
-    local project_path = vim.fn.fnamemodify(plugin_path .. "../../..", ":p:h")
-    wrapper = project_path .. "/shellgeist"
+    wrapper = "shellgeist"
   end
 
   if vim.fn.executable(wrapper) == 0 then
@@ -218,7 +231,10 @@ function M.run_agent(goal)
         return
       end
       ensure_daemon(function()
-        local session_id = vim.fn.sha256(project_root())
+        local root = project_root()
+        local session_id = vim.fn.sha256(root)
+        M._last_root = root
+        M._last_session_id = session_id
         M.reload_history(session_id, {
           on_done = function()
             sidebar.focus_prompt()
@@ -230,7 +246,22 @@ function M.run_agent(goal)
 
     ensure_daemon(function()
       local root = project_root()
+      local home = vim.loop.os_homedir()
+      if root == home then
+        notify("WORKSPACE ROOT is your HOME directory (" .. root .. "). Open Neovim inside a project folder first.", vim.log.levels.ERROR)
+        if not sidebar.is_open() then
+          local ok_open, err_open = pcall(sidebar.open)
+          if not ok_open then
+            notify("sidebar.open failed: " .. tostring(err_open), vim.log.levels.ERROR)
+            return
+          end
+        end
+        sidebar.append_text("WORKSPACE ROOT is your HOME directory (" .. root .. "). Open Neovim inside a project folder first.", "error")
+        return
+      end
       local session_id = vim.fn.sha256(root)
+      M._last_root = root
+      M._last_session_id = session_id
       local was_open = sidebar.is_open()
       local ok_open, err_open = pcall(sidebar.open)
       if not ok_open then
@@ -261,7 +292,15 @@ function M.run_agent(goal)
             elseif phase == "thinking" or phase == "streaming" or phase == "tool_use" then
               thinking = true
             end
-            sidebar.set_thinking(thinking)
+            -- Show rich status text (e.g. "🔍 Reading main.py") when available
+            if thinking and content ~= "" then
+              sidebar.set_thinking(true)
+              if sidebar.prompt and sidebar.prompt.border then
+                pcall(function() sidebar.prompt.border:set_text("top", " " .. content:sub(1, 40) .. " ", "center") end)
+              end
+            else
+              sidebar.set_thinking(thinking)
+            end
             return true
           end
 
@@ -338,7 +377,11 @@ function M.run_agent(goal)
           end
 
           if channel == "reasoning" then
-            sidebar.append_text(content, "thinking", meta)
+            if meta.chunk then
+              sidebar.append_text(content, "thinking_chunk", meta)
+            else
+              sidebar.append_text(content, "thinking", meta)
+            end
           elseif channel == "response" then
             if meta.chunk then
               sidebar.append_text(content, "response_chunk", meta)
@@ -438,6 +481,11 @@ end, { nargs = "+" })
 vim.api.nvim_create_user_command("SGPlan", function(opts)
   local goal = opts.args
   local root = project_root()
+  local home = vim.loop.os_homedir()
+  if root == home then
+    notify("WORKSPACE ROOT is your HOME directory (" .. root .. "). Open Neovim inside a project folder first.", vim.log.levels.ERROR)
+    return
+  end
   rpc.request(M._cfg.socket, { cmd = "plan", root = root, goal = goal }, function(ev)
     handle_result(ev, function(res)
       notify("plan ok (" .. tostring(#(res.steps or {})) .. " steps)")
@@ -448,6 +496,11 @@ end, { nargs = "+" })
 vim.api.nvim_create_user_command("SGShell", function(opts)
   local task = opts.args
   local root = project_root()
+  local home = vim.loop.os_homedir()
+  if root == home then
+    notify("WORKSPACE ROOT is your HOME directory (" .. root .. "). Open Neovim inside a project folder first.", vim.log.levels.ERROR)
+    return
+  end
   rpc.request(M._cfg.socket, { cmd = "shell", root = root, task = task }, function(ev)
     handle_result(ev, function(res)
       local blocked = res.blocked or {}
@@ -471,6 +524,11 @@ vim.api.nvim_create_user_command("SGEdit", function(opts)
   local file = fargs[1]
   local instruction = table.concat(fargs, " ", 2)
   local root = project_root()
+  local home = vim.loop.os_homedir()
+  if root == home then
+    notify("WORKSPACE ROOT is your HOME directory (" .. root .. "). Open Neovim inside a project folder first.", vim.log.levels.ERROR)
+    return
+  end
 
   -- immediate feedback (so never "silent")
   notify("edit: sending request...")
@@ -503,6 +561,11 @@ end, { nargs = "+", complete = "file" })
 
 vim.api.nvim_create_user_command("SGStatus", function()
   local root = project_root()
+  local home = vim.loop.os_homedir()
+  if root == home then
+    notify("WORKSPACE ROOT is your HOME directory (" .. root .. "). Open Neovim inside a project folder first.", vim.log.levels.ERROR)
+    return
+  end
   rpc.request(M._cfg.socket, { cmd = "git_status", root = root }, function(ev)
     handle_result(ev, function(res)
       if res.inside_git == false then

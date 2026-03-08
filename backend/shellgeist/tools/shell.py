@@ -611,6 +611,14 @@ def run_shell(command: str, root: str, **kwargs: Any) -> str:
     """
     Execute a shell command and return its output.
     """
+    # Guard: refuse to run in home directory (likely misconfigured root)
+    home = str(Path.home().resolve())
+    if str(Path(root).resolve()) == home:
+        return (
+            "Error: WORKSPACE ROOT is your HOME directory. "
+            "Open Neovim inside a project folder first."
+        )
+
     cmd = (command or "").strip()
     if not cmd:
         return "Error: empty command"
