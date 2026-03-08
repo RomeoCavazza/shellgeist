@@ -20,6 +20,11 @@ _TOOL_RE = re.compile(
     _TAG_OPEN + r"(.*?)" + _TAG_CLOSE,
     re.DOTALL | re.IGNORECASE,
 )
+# Markdown code block: ```tool_use\n{...}\n``` (model sometimes outputs this instead of XML)
+_MD_TOOL_RE = re.compile(
+    r"```\s*tool_use\s*\n(.*?)```",
+    re.DOTALL | re.IGNORECASE,
+)
 # Extract name="..." from tag attributes
 _ATTR_NAME_RE = re.compile(r'name\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
 
@@ -42,7 +47,25 @@ def parse_xml_tool_use(
 ) -> list[dict[str, Any]]:
     matches: list[Any] = list(_TOOL_RE.finditer(text))
 
-    # Fallback: split on any opening tool tag if regex didn't match
+    # Fallback 1: markdown code blocks ```tool_use\n{...}```
+    if not matches:
+        md_calls = []
+        for md in _MD_TOOL_RE.finditer(text):
+            body = md.group(1).strip()
+            try:
+                wrapped = _wrap_bare_json(body)
+                obj = loads_obj(wrapped)
+                if isinstance(obj, dict) and obj.get("name"):
+                    args = obj.get("arguments") or obj
+                    if args is obj:
+                        args = {k: v for k, v in obj.items() if k not in ("name", "arguments")}
+                    md_calls.append({"name": obj["name"], "arguments": args})
+            except Exception:
+                continue
+        if md_calls:
+            return _normalize_calls(md_calls)
+
+    # Fallback 2: split on any opening tool tag if regex didn't match
     if not matches:
         for variant in ("tool_use", "tool_request", "tool_call", "tool"):
             tag = f"<{variant}"
@@ -88,7 +111,22 @@ def parse_xml_tool_use(
             obj = {"name": attr_name, "arguments": obj}
 
         calls.append(obj)
-    return calls
+    return _normalize_calls(calls)
+
+
+def _normalize_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure each call has name and arguments keys."""
+    out = []
+    for c in calls:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name")
+        args = c.get("arguments")
+        if args is None:
+            args = {k: v for k, v in c.items() if k not in ("name", "arguments")}
+        if name:
+            out.append({"name": name, "arguments": args or {}})
+    return out
 
 
 class _FakeMatch:
