@@ -88,7 +88,7 @@ class Agent:
         self.history = load_recent_history(self.history, session_id=session_id)
         append_user_goal_once(self.history, session_id=session_id, goal=goal)
 
-        max_steps = 8
+        max_steps = 12
         logs: list[str] = []
         any_tool_succeeded = False
         last_shell_session_id = None

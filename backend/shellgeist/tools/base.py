@@ -49,6 +49,7 @@ class ToolRegistry:
             schema = {}
             if tool.input_model is not None and tool.input_model is not BaseModel:
                 schema = tool.input_model.model_json_schema()
+                schema = _clean_schema(schema)
 
             schemas.append({
                 "name": tool.name,
@@ -56,6 +57,35 @@ class ToolRegistry:
                 "parameters": schema
             })
         return schemas
+
+
+def _clean_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Recursively strip noise from Pydantic JSON schemas for 7B models.
+
+    Removes: title, $defs, default, anyOf (simplified to first type).
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    out: dict[str, Any] = {}
+    for k, v in schema.items():
+        if k in ("title", "$defs", "default"):
+            continue
+        if k == "anyOf" and isinstance(v, list):
+            # Simplify Optional[X] → X
+            non_null = [t for t in v if t != {"type": "null"}]
+            if len(non_null) == 1:
+                out.update(_clean_schema(non_null[0]))
+            else:
+                out[k] = v
+            continue
+        if isinstance(v, dict):
+            out[k] = _clean_schema(v)
+        elif isinstance(v, list):
+            out[k] = [_clean_schema(i) if isinstance(i, dict) else i for i in v]
+        else:
+            out[k] = v
+    return out
 
 
 # Global registry for the engine

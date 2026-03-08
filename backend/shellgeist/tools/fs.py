@@ -41,7 +41,8 @@ def read_file(path: str | None = None, root: str = "", file_path: str | None = N
     target = (path or file or file_path or "").strip()
     p = resolve_repo_path(Path(root), target)
     if not p.exists():
-        raise FileNotFoundError(f"File not found: {target}")
+        hint = f" Hint: try a relative path like '{Path(target).name}' instead." if target.startswith("/") else ""
+        raise FileNotFoundError(f"File not found: {target}.{hint}")
     return p.read_text(encoding="utf-8", errors="replace")
 
 
@@ -138,7 +139,8 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
 def list_files(directory: str = ".", root: str = "", recursive: bool = False, depth: int = 3, max_results: int = 100, **kwargs: Any) -> list[str]:
     p = resolve_repo_path(Path(root), directory)
     if not p.exists() or not p.is_dir():
-        raise FileNotFoundError(f"Directory not found: {directory}")
+        hint = f" Hint: try a relative path like '{Path(directory).name}' instead." if directory.startswith("/") else ""
+        raise FileNotFoundError(f"Directory not found: {directory}.{hint}")
 
     # Use the resolved directory as base for relative paths
     base = str(p)

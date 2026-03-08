@@ -1,7 +1,4 @@
-"""Tool execution policy: loop guard, retries, and manual approval filters.
-
-Moved from tools/policy.py.
-"""
+"""Tool execution policy: loop guard, retries, and dangerous command filters."""
 from __future__ import annotations
 
 import asyncio
@@ -22,8 +19,8 @@ from shellgeist.config import env_int as _env_int
 @dataclass
 class LoopGuardConfig:
     warn_threshold: int = 2
-    block_threshold: int = 2
-    outcome_block_threshold: int = 2
+    block_threshold: int = 3
+    outcome_block_threshold: int = 3
     success_repeat_threshold: int = 2
     global_call_limit: int = 40
     history_size: int = 16

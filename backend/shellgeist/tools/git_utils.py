@@ -10,10 +10,13 @@ from pathlib import Path
 
 def git(root: Path, args: list[str]) -> tuple[int, str]:
     """Run a git command inside *root* and return ``(returncode, stdout)``."""
-    p = subprocess.run(
-        ["git", "-C", str(root), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    return p.returncode, p.stdout
+    try:
+        p = subprocess.run(
+            ["git", "-C", str(root), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        return p.returncode, p.stdout
+    except FileNotFoundError:
+        return 127, "Error: git is not installed or not in PATH."

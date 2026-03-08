@@ -11,60 +11,53 @@ from shellgeist.agent.messages import Message
 
 DB_PATH = os.path.expanduser("~/.cache/shellgeist/history.db")
 
+_DB_TIMEOUT = 5  # seconds
+
 
 # ---------------------------------------------------------------------------
-# Database Persistence (formerly session/store.py)
+# Database Persistence
 # ---------------------------------------------------------------------------
 
 def init_db() -> None:
     """Initialize the SQLite history database."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            role TEXT,
-            content TEXT,
-            log_type TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH, timeout=_DB_TIMEOUT) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                role TEXT,
+                content TEXT,
+                log_type TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
 
 def save_message(session_id: str, role: str, content: str, log_type: str | None = None) -> None:
     """Persist a message to the database."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO messages (session_id, role, content, log_type) VALUES (?, ?, ?, ?)",
-        (session_id, role, content, log_type)
-    )
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH, timeout=_DB_TIMEOUT) as conn:
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, log_type) VALUES (?, ?, ?, ?)",
+            (session_id, role, content, log_type)
+        )
 
 
 def get_session_history(session_id: str, for_ui: bool = False) -> list[dict[str, str]]:
     """Retrieve and format session history."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    if for_ui:
-        cur.execute(
-            "SELECT role, content, log_type FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
-            (session_id,)
-        )
-    else:
-        # Exclude tool_observations (log_type='context') — they are stored as role='user'
-        # but create broken consecutive-user-message sequences that confuse the LLM.
-        cur.execute(
-            "SELECT role, content FROM messages WHERE session_id = ? AND role IN ('user', 'assistant', 'tool') AND (log_type IS NULL OR log_type != 'context') ORDER BY timestamp ASC",
-            (session_id,)
-        )
-    rows = cur.fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH, timeout=_DB_TIMEOUT) as conn:
+        cur = conn.cursor()
+        if for_ui:
+            cur.execute(
+                "SELECT role, content, log_type FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
+                (session_id,)
+            )
+        else:
+            cur.execute(
+                "SELECT role, content FROM messages WHERE session_id = ? AND role IN ('user', 'assistant', 'tool') AND (log_type IS NULL OR log_type != 'context') ORDER BY timestamp ASC",
+                (session_id,)
+            )
+        rows = cur.fetchall()
 
     history = []
     for row in rows:
@@ -100,7 +93,7 @@ def get_session_history(session_id: str, for_ui: bool = False) -> list[dict[str,
 
 
 # ---------------------------------------------------------------------------
-# Session Operations (formerly session/ops.py)
+# Session Operations
 # ---------------------------------------------------------------------------
 
 def load_recent_history(
@@ -139,7 +132,7 @@ def append_user_goal_once(
 
 
 # ---------------------------------------------------------------------------
-# Session Repair (formerly session/repair.py)
+# Session Repair
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -149,6 +142,7 @@ class SessionRepairReport:
     dropped_count: int
     deduped_count: int
     normalized_count: int
+    merged_count: int = 0
 
     def changed(self) -> bool:
         return (
@@ -156,6 +150,7 @@ class SessionRepairReport:
             or self.dropped_count > 0
             or self.deduped_count > 0
             or self.normalized_count > 0
+            or self.merged_count > 0
         )
 
 
@@ -164,11 +159,12 @@ def repair_conversation_history(
     *,
     max_non_system: int = 80,
 ) -> tuple[list[dict[str, str]], SessionRepairReport]:
-    """Sanitize, deduplicate, and prune chat history for LLM safety."""
+    """Sanitize, deduplicate, merge consecutive same-role, and prune chat history."""
     allowed_roles = {"system", "user", "assistant", "tool"}
     dropped_count = 0
     deduped_count = 0
     normalized_count = 0
+    merged_count = 0
     repaired: list[dict[str, str]] = []
 
     for msg in messages:
@@ -193,8 +189,16 @@ def repair_conversation_history(
                 continue
 
         entry = {"role": raw_role, "content": content}
+
+        # Dedup exact duplicates
         if repaired and repaired[-1] == entry:
             deduped_count += 1
+            continue
+
+        # Merge consecutive same-role messages (especially user-user)
+        if repaired and repaired[-1]["role"] == raw_role and raw_role != "system":
+            repaired[-1]["content"] += "\n\n" + content
+            merged_count += 1
             continue
 
         repaired.append(entry)
@@ -217,5 +221,6 @@ def repair_conversation_history(
         dropped_count=dropped_count,
         deduped_count=deduped_count,
         normalized_count=normalized_count,
+        merged_count=merged_count,
     )
     return final_history, report
