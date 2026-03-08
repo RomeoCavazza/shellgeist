@@ -1,18 +1,18 @@
-"""Tool execution policy: loop guard, retries, and manual approval filters."""
+"""Tool execution policy: loop guard, retries, and manual approval filters.
+
+Moved from tools/policy.py.
+"""
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import json
-import os
-import random
 import re
 from collections import deque
 from dataclasses import dataclass
 from hashlib import sha256
-from pathlib import Path
 from typing import Any, Callable, Awaitable
 
+from shellgeist.runtime.paths import resolve_repo_path
 from shellgeist.config import env_int as _env_int
 
 # ---------------------------------------------------------------------------
@@ -153,27 +153,6 @@ class RetryEngine:
                 continue
             return result
         return last_result
-
-
-# ---------------------------------------------------------------------------
-# Manual Approval & Pattern Policy (formerly tools/policy.py)
-# ---------------------------------------------------------------------------
-
-class ToolPolicy:
-    def __init__(self, root: str, session_id: str) -> None:
-        self.root = str(Path(root).resolve())
-        self.session_id = session_id
-        self._raw_policy = self._load_policy()
-
-    def _load_policy(self) -> dict[str, Any]:
-        try:
-            return json.loads(os.environ.get("SHELLGEIST_TOOL_POLICY_JSON", "{}"))
-        except: return {}
-
-    def evaluate(self, tool_name: str, args: dict[str, Any] | None = None) -> bool:
-        """Evaluate if a tool call is allowed by policy."""
-        # Simplified for Lean: everything is allowed by default unless explicitly blocked
-        return True
 
 
 # ---------------------------------------------------------------------------

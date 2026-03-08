@@ -61,7 +61,7 @@ Changelog = "https://github.com/RomeoCavazza/shellgeist/blob/main/CHANGELOG.md"
 
 [project.scripts]
 shellgeist = "shellgeist.cli:main"
-sgd = "shellgeist.sgd:cli_main"
+sgd = "shellgeist.cli:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

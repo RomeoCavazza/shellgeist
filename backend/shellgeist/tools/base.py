@@ -14,6 +14,15 @@ class Tool:
     input_model: type[Any] | None = None
 
     def execute(self, **kwargs: Any) -> Any:
+        if self.input_model:
+            try:
+                model_fields = set(self.input_model.model_fields.keys())
+                model_kwargs = {k: v for k, v in kwargs.items() if k in model_fields}
+                extra_kwargs = {k: v for k, v in kwargs.items() if k not in model_fields}
+                validated = self.input_model.model_validate(model_kwargs)
+                return self.func(**validated.model_dump(), **extra_kwargs)
+            except Exception as e:
+                return f"Error: Validation failed for {self.name}. {e}"
         return self.func(**kwargs)
 
 

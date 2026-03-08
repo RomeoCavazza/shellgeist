@@ -1,4 +1,7 @@
-"""Code editing tools: edit_apply, write_file, edit_plan via LLM."""
+"""Code editing tools: edit_apply, write_file, edit_plan via LLM.
+
+Renamed from tools/coder.py.
+"""
 from __future__ import annotations
 
 import difflib
@@ -9,22 +12,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from shellgeist.agent.models import Message
-from shellgeist.tools.editor import PatchApplyError, apply_unified_diff, enforce_guards, autofix_future_import, guard_future_import
+from shellgeist.agent.messages import Message
+from shellgeist.tools.patch import PatchApplyError, apply_unified_diff, enforce_guards, autofix_future_import, guard_future_import
 from shellgeist.llm.client import get_client
 from shellgeist.tools.base import registry
-from shellgeist.tools.normalize import (
+from shellgeist.agent.parsing.normalize import (
     maybe_unescape_llm_string,
     salvage_fulltext,
 )
-from shellgeist.util_git import git
-from shellgeist.util_json import loads_obj
-from shellgeist.util_path import resolve_repo_path
-
-
-from pydantic import BaseModel, ConfigDict
+from shellgeist.tools.git_utils import git
+from shellgeist.agent.parsing.json_utils import loads_obj
+from shellgeist.runtime.paths import resolve_repo_path
 
 
 class EditFileInput(BaseModel):

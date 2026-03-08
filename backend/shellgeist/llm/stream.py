@@ -2,9 +2,16 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
-from shellgeist.safety.retry import classify_result_payload
+from shellgeist.runtime.policy import classify_result_payload
+
+
+@dataclass
+class StreamReport:
+    outcome: str = "success"
+    error: str | None = None
 
 
 async def run_llm_stream_with_retry(
@@ -16,7 +23,7 @@ async def run_llm_stream_with_retry(
     telemetry: Any,
     log_retry: Callable[[str], Awaitable[None]],
     debug_log: Callable[[str], None] | None = None,
-) -> tuple[str | None, Any]:
+) -> tuple[str | None, StreamReport]:
     def _dbg(message: str) -> None:
         if debug_log is not None:
             debug_log(message)
@@ -48,10 +55,16 @@ async def run_llm_stream_with_retry(
             f"Retry LLM stream (attempt {attempt + 1}) in {delay_ms}ms [{error_class}] {reason}"
         )
 
-    result: tuple[str | None, Any] = await retry_engine.run_async(
+    content: str | None = await retry_engine.run_async(
         key="llm_stream",
         operation=_collect_stream_once,
         classify_result=lambda result: classify_result_payload(result),
         on_retry=_on_llm_retry,
     )
-    return result
+    
+    report = StreamReport(outcome="success" if content is not None and not str(content).startswith("Error:") else "failure")
+    if report.outcome == "failure":
+        report.error = str(content) if content else "Max retries exceeded"
+        content = None
+
+    return content, report

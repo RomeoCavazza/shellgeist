@@ -99,9 +99,9 @@ def cmd_agent(args: argparse.Namespace) -> int:
 
 def cmd_daemon(args: argparse.Namespace) -> int:
     """Start the background daemon."""
-    from shellgeist.sgd import main as daemon_main
+    from shellgeist.runtime.server import run_server
 
-    return asyncio.run(daemon_main())
+    return asyncio.run(run_server())
 
 
 def cmd_debug(args: argparse.Namespace) -> int:
@@ -133,7 +133,7 @@ def cmd_debug(args: argparse.Namespace) -> int:
 
 def cmd_edit_plan(args: argparse.Namespace) -> int:
     """Generate edit plan for a file."""
-    from shellgeist.tools.coder import edit_plan
+    from shellgeist.tools.edit import edit_plan
 
     root = Path(args.root).resolve() if args.root else Path.cwd()
     result = edit_plan(args.file, args.instruction, root=root)

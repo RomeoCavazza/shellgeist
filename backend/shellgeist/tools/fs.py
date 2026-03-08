@@ -9,7 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from shellgeist.tools.base import registry
-from shellgeist.util_path import resolve_repo_path
+from shellgeist.runtime.paths import resolve_repo_path
 
 # Directories always excluded from recursive listings / searches
 _IGNORED_DIRS = frozenset({
@@ -19,11 +19,15 @@ _IGNORED_DIRS = frozenset({
 })
 
 
+from pydantic import BaseModel, ConfigDict
+
 class ReadFileInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     path: str
 
 
 class ListFilesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     directory: str = "."
     recursive: bool = False
     depth: int = 3
@@ -42,6 +46,7 @@ def read_file(path: str | None = None, root: str = "", file_path: str | None = N
 
 
 class RepoMapInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     pass
 
 
@@ -74,6 +79,7 @@ def get_repo_map(root: str, **kwargs: Any) -> str:
 
 
 class WriteFileInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     path: str
     content: str
 
@@ -169,6 +175,7 @@ def list_files(directory: str = ".", root: str = "", recursive: bool = False, de
 
 
 class FindFilesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     pattern: str
     directory: str = "."
 

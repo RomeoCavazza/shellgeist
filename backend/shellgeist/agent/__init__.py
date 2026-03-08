@@ -1,5 +1,2 @@
 """Agent orchestration: core loop, messages, state machine."""
-
-from shellgeist.agent.core import Agent
-
-__all__ = ["Agent"]
+# Empty init to allow importing submodules (like .models) without triggering full Agent logic

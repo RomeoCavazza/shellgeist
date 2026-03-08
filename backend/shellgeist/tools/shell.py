@@ -17,17 +17,19 @@ from dataclasses import dataclass
 from typing import Any
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from shellgeist.safety.blocked import is_blocked
+from shellgeist.runtime.policy import is_blocked
 from shellgeist.tools.base import registry
 
 
 class ShellCommandInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     command: str
 
 
 class StartShellSessionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     session_id: str | None = None
     shell: str = "bash -i"
     command: str | None = None
@@ -35,18 +37,21 @@ class StartShellSessionInput(BaseModel):
 
 
 class WriteShellSessionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     session_id: str
     input: str
     append_newline: bool = True
 
 
 class ReadShellSessionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     session_id: str
     timeout_ms: int = 250
     max_bytes: int = 65536
 
 
 class ExecShellSessionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     session_id: str
     command: str
     wait_ms: int = 350
@@ -54,15 +59,18 @@ class ExecShellSessionInput(BaseModel):
 
 
 class CloseShellSessionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     session_id: str
     force: bool = False
 
 
 class ListShellSessionsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     pass
 
 
 class RunNixPythonInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     command: str
     python_packages: list[str] = []
     system_packages: list[str] = []

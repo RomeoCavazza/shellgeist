@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from shellgeist.util_json import loads_obj
+from shellgeist.agent.parsing.json_utils import loads_obj
 
 
 def is_small_talk(goal: str) -> str | None:
@@ -21,7 +21,10 @@ def is_small_talk(goal: str) -> str | None:
         "tu es qui", "qui es-tu", "who are you", "c'est quoi shellgeist",
         "aide-moi", "help", "aide", "sos"
     )
-    # Fuzzy match: starts with greeting or is very short
+    # Only match pure greetings (short messages with no task content).
+    # Anything > 20 chars almost certainly contains a real request.
+    if len(low) > 20:
+        return None
     if any(low.startswith(g) for g in greetings) or len(low) < 3:
         # Basic check to avoid false positives on commands like "ls" or "rm"
         if len(low) > 3 or low in greetings:
@@ -94,27 +97,49 @@ _PLAINTEXT_TOOL_RE = re.compile(
 def extract_plaintext_tool_calls(content: str) -> list[dict[str, Any]]:
     """Extract tool calls written as plain text (without XML tags).
 
-    Returns a list of {"name": ..., "arguments": {...}} dicts, same
-    format as parse_xml_tool_use.  Returns empty list if nothing found.
+    Handles:
+    1. ToolName: { json }
+    2. Bare JSON with "name": "..."
     """
     calls: list[dict[str, Any]] = []
+    
+    # 1. Classical "ToolName: { json }" match
     for m in _PLAINTEXT_TOOL_RE.finditer(content):
         raw_name = m.group(1).strip().lower()
         json_body = m.group(2)
-
         tool_name = _CLASS_TO_TOOL.get(raw_name)
-        if not tool_name:
-            continue
-
+        if not tool_name: continue
         try:
             obj = loads_obj(json_body)
+            if isinstance(obj, dict):
+                calls.append({"name": tool_name, "arguments": obj})
         except Exception:
             continue
 
-        if not isinstance(obj, dict):
-            continue
+    if calls: return calls
 
-        calls.append({"name": tool_name, "arguments": obj})
+    # 2. Search for any JSON block that has a "name" matching a tool
+    # Regex for finding JSON objects (simple heuristic)
+    json_blocks = re.findall(r'(\{(?:[^{}]|\{[^{}]*\})*\})', content, re.DOTALL)
+    for block in json_blocks:
+        try:
+            obj = loads_obj(block)
+            if not isinstance(obj, dict): continue
+            
+            name = obj.get("name")
+            if not isinstance(name, str): continue
+            
+            tool_name = _CLASS_TO_TOOL.get(name.lower())
+            if tool_name:
+                # Map "parameters" -> "arguments" if present
+                args = obj.get("arguments") or obj.get("parameters") or obj
+                if args == obj:
+                    # If the whole object is the tool call, remove "name" from args
+                    args = {k: v for k, v in obj.items() if k not in ("name", "parameters")}
+                
+                calls.append({"name": tool_name, "arguments": args})
+        except Exception:
+            continue
 
     return calls
 
@@ -154,10 +179,9 @@ def _looks_like_final_response(content: str) -> bool:
     if stripped.rstrip().endswith("?"):
         return True
 
-    # Substantial text (>= 5 lines of non-thought content) is likely a real answer.
-    # Raised from 3 to 5 because 7B models produce 3-4 lines of hallucinated
-    # results and then stop without actually doing anything.
-    if len(non_thought) >= 5:
+    # Substantial text (>= 6 lines) is likely a real answer.
+    # We raise this because 7B models can blather a lot.
+    if len(non_thought) >= 6:
         return True
 
     # Short completion words ("Terminé", "Done", "Voilà") are only final
@@ -205,29 +229,50 @@ def decide_no_tool_action(
         )
         return NoToolDecision(action="continue", feedback=feedback)
 
-    # Allow conversational / final answers without requiring 'Status: DONE'
+    # Allow conversational / final answers
     if _looks_like_final_response(content):
-        if not any_tool_succeeded:
-            return NoToolDecision(
-                action="continue",
-                feedback=(
-                    "INVALID_COMPLETION: You wrote a response but have NOT called any tool. "
-                    "You MUST call the appropriate tool to perform the action. "
-                    "Do NOT describe what you would do — DO IT with <tool_use>."
-                ),
+        # We require Status: DONE or a question to consider it truly complete.
+        # This prevents 7B models from trailing off into hallucinations.
+        is_done = "status: done" in content.lower()
+        is_question = content.strip().rstrip().endswith("?")
+        
+        if is_done or is_question:
+            if not any_tool_succeeded and is_done:
+                # Still check if we did anything if it says "DONE"
+                return NoToolDecision(
+                    action="continue",
+                    feedback=(
+                        "You said 'Status: DONE' but you have NOT called any tool. "
+                        "Perform the action first."
+                    )
+                )
+            if not any_tool_succeeded and is_question:
+                # LLM asked a clarifying question instead of using a tool — reject it.
+                return NoToolDecision(
+                    action="continue",
+                    feedback=(
+                        "CLARIFICATION_FORBIDDEN: Do NOT ask for clarification. "
+                        "The user's request is actionable. Call the appropriate tool immediately."
+                    ),
+                )
+            return NoToolDecision(action="complete", final_response=extract_final_response(content))
+
+        # If it's neither "DONE" nor a question, it's likely blather or an unfinished task.
+        return NoToolDecision(
+            action="continue",
+            feedback=(
+                "If you are finished, you MUST end your response with 'Status: DONE'. "
+                "If you are not finished, keep going by calling the next tool. "
+                "Do NOT just explain your progress."
             )
-        if completion_blocker:
-            return NoToolDecision(action="continue", feedback=completion_blocker)
-        return NoToolDecision(action="complete", final_response=extract_final_response(content))
+        )
 
     return NoToolDecision(
         action="continue",
         feedback=(
-            "FAILURE: No tool calls and no final response detected. "
-            "You MUST either: (1) call a tool to proceed with the task, or "
-            "(2) provide a final answer ending with 'Status: DONE'. "
-            "Do NOT respond with only a short word like 'Terminé' — "
-            "explain what was accomplished or call the next tool."
+            "FORMAT_ERROR: You did not emit a tool call. "
+            "Output ONLY a <tool_use> tag like this — no other text:\n"
+            "<tool_use>{\"name\": \"list_files\", \"arguments\": {\"directory\": \".\"}}</tool_use>"
         ),
     )
 

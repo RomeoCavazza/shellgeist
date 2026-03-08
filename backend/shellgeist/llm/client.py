@@ -24,23 +24,12 @@ from shellgeist.config import (
 )
 
 
-@dataclass
-class _ToolCall:
-    id: str
-    type: str
-    function: dict[str, Any]
-
-
-@dataclass
-class _Msg:
-    content: str | None
-    role: str = "assistant"
-    tool_calls: list[_ToolCall] | None = None
+from shellgeist.agent.messages import Message, ToolCall
 
 
 @dataclass
 class _Choice:
-    message: _Msg
+    message: Message
 
 
 @dataclass
@@ -103,11 +92,11 @@ class _ChatCompletions:
             tool_calls = None
             if "tool_calls" in msg_data and msg_data["tool_calls"]:
                 tool_calls = [
-                    _ToolCall(id=tc["id"], type=tc["type"], function=tc["function"])
+                    ToolCall(id=tc["id"], type=tc["type"], function=tc["function"])
                     for tc in msg_data["tool_calls"]
                 ]
 
-            msg = _Msg(
+            msg = Message(
                 content=msg_data.get("content"),
                 role=msg_data.get("role", "assistant"),
                 tool_calls=tool_calls

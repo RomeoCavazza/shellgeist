@@ -1,128 +1,11 @@
-"""Tool execution engine: dispatch, observation capture, outcome building."""
+"""Tool execution engine: dispatch, observation capture, and outcome handling."""
 from __future__ import annotations
 
 import json
-import re
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from shellgeist.safety.retry import classify_result_payload
-from shellgeist.tools.runtime import (
-    SHELL_SESSION_TOOLS,
-    auto_heal_session_id,
-    build_policy_args,
-    build_tool_meta,
-    detect_execution_evidence,
-)
-
-# Patterns that indicate a shell command is trying to create/write a file
-_FILE_CREATION_RE = re.compile(
-    r"""
-    (?:^|\s|;|&&|\|\|)              # start or chained command
-    (?:
-        echo\s+.*?>\s*\S            # echo ... > file
-        | printf\s+.*?>\s*\S        # printf ... > file
-        | cat\s*<<                  # cat << heredoc
-        | tee\s+\S                  # tee file
-        | >\s*\S                    # > file (truncate)
-        | python[23]?\s+-c\s+.*open\(  # python -c "open(..."
-        | dd\s+.*of=                # dd of=file
-    )
-    """,
-    re.VERBOSE | re.IGNORECASE,
-)
-
-
-# Patterns that indicate the LLM is being lazy and not writing full content.
-# NOTE: plain "..." is NOT included — it appears in legitimate prose.
-_LAZY_PLACEHOLDER_PATTERNS = [
-    r"^\s*\.\.\.\s*$",                      # line that is ONLY "..."
-    r"\.\.\. *\(.*(?:rest|more|remain|suite|etc)",  # "... (rest of file)"
-    r"# *(TODO|FIXME|content here|code here|your .* here)",
-    r"// *(TODO|FIXME|content here|code here|your .* here)",
-    r"<code",                                  # HTML placeholder
-    r"précédemment donné",
-    r"existing code",
-    r"remain(s|ing)? unchanged",
-    r"same as (before|above)",
-    r"\.\.\. *existing",
-]
-_LAZY_RE = re.compile("|".join(_LAZY_PLACEHOLDER_PATTERNS), re.IGNORECASE | re.MULTILINE)
-
-
-def _has_lazy_placeholders(content: str) -> bool:
-    """Return True if file content contains lazy placeholder patterns.
-
-    Does NOT flag legitimate uses of '...' in prose text.
-    """
-    return bool(_LAZY_RE.search(content))
-
-
-def _shell_creates_file(cmd: str) -> bool:
-    """Return True if a shell command appears to create/write a file."""
-    return bool(_FILE_CREATION_RE.search(cmd))
-
-
-def _shell_self_redirects(cmd: str) -> bool:
-    """Return True if a shell command reads and writes the same file.
-
-    Patterns like ``sort file > file`` or ``tac file > file`` silently
-    empty the file because the shell truncates the output before the
-    reader finishes.
-    """
-    # Find output redirection targets (> file or >> file)
-    redirect_targets = re.findall(r'>{1,2}\s*([^\s;|&]+)', cmd)
-    if not redirect_targets:
-        return False
-    # Check if any redirected target also appears as an input earlier
-    for target in redirect_targets:
-        target_clean = target.strip("\"'")
-        # Look for the target used as a positional argument (not after > or |)
-        # Simple heuristic: target appears before the redirect
-        before_redirect = cmd.split('>' + target)[0] if '>' + target in cmd else cmd.split('>')[0]
-        if target_clean in before_redirect.split():
-            return True
-        # Also check quoted forms
-        if f'"{target_clean}"' in before_redirect or f"'{target_clean}'" in before_redirect:
-            return True
-    return False
-
-
-def _targets_project_dir(cmd: str, root: str) -> bool:
-    """Return True if the file path in a shell write targets the project directory.
-
-    Files outside the project (e.g. ~/.config/, /tmp/) should be written via
-    run_shell, not write_file (which only works inside the repo root).
-    """
-    # Extract potential file paths from the command
-    # Look for paths after redirection operators or as tee arguments
-    import os
-    from pathlib import Path
-
-    root_resolved = Path(root).resolve()
-    # If the command contains absolute paths starting with ~ or / that are
-    # outside the project, allow it
-    path_patterns = re.findall(r'[>]\s*([^\s;|&]+)|tee\s+([^\s;|&]+)', cmd)
-    for groups in path_patterns:
-        for p in groups:
-            if not p:
-                continue
-            expanded = os.path.expanduser(p)
-            try:
-                resolved = Path(expanded).resolve()
-                if not str(resolved).startswith(str(root_resolved)):
-                    return False  # outside project → allow shell write
-            except Exception:
-                pass
-    # If command mentions ~ or absolute paths outside root, allow it
-    if '~/' in cmd or '~"' in cmd or "~'" in cmd:
-        return False
-    for token in cmd.split():
-        if token.startswith('/') and not token.startswith(str(root_resolved)):
-            return False
-    return True  # assume in-project by default → block
-
+from shellgeist.runtime.policy import is_failed_result
 
 @dataclass
 class ToolExecutionOutcome:
@@ -132,292 +15,47 @@ class ToolExecutionOutcome:
     last_shell_session_id: str | None = None
     touched_code: bool = False
     verified_execution: bool = False
-    error_code: str | None = None
-    final_response: str | None = None
-    done_meta: dict[str, Any] | None = None
 
-
-# ------------------------------------------------------------------
-# Pre-flight: policy + loop guard
-# ------------------------------------------------------------------
-
-def _preflight_checks(
-    func_name: str,
-    args: dict[str, Any],
-    *,
-    task_terminal_only: bool,
-    policy: Any,
-    loop_guard: Any,
-    last_shell_session_id: str | None,
-    tool_meta: dict[str, Any],
-) -> ToolExecutionOutcome | None:
-    """Return an early outcome if policy or loop guard blocks the call, else None."""
-    policy_args = build_policy_args(args, task_terminal_only=task_terminal_only)
-    decision = policy.evaluate(func_name, policy_args)
-    if not decision.allowed:
-        policy_msg = decision.reason or "POLICY_DENY: tool call is not allowed by active policy."
-        return ToolExecutionOutcome(kind="observation", func_name=func_name, observation=policy_msg, last_shell_session_id=last_shell_session_id)
-
-    verdict, verdict_msg = loop_guard.check_call(func_name, args)
-    if verdict == "circuit":
-        return ToolExecutionOutcome(
-            kind="failure",
-            func_name=func_name,
-            error_code="loop_circuit_breaker",
-            final_response=(
-                "Agent loop stopped by circuit breaker due to excessive repetitive tool activity. "
-                "Please retry with a narrower task."
-            ),
-            done_meta={"thinking": False, "circuit": True},
-            last_shell_session_id=last_shell_session_id,
-        )
-
-    if verdict == "block":
-        res = verdict_msg or (
-            "BLOCKED_REPEAT_TOOL: This exact tool call failed repeatedly. "
-            "Do not retry it; choose another approach."
-        )
-        return ToolExecutionOutcome(kind="observation", func_name=func_name, observation=str(res), last_shell_session_id=last_shell_session_id)
-
-    return None
-
-
-# ------------------------------------------------------------------
-# Post-execution: session tracking + shell hints
-# ------------------------------------------------------------------
-
-def _extract_session_id(func_name: str, res: Any, fallback: str | None) -> str | None:
-    """Extract a new shell session_id from a start_shell_session result."""
-    if func_name != "start_shell_session":
-        return fallback
-    try:
-        start_obj = json.loads(str(res or ""))
-        if isinstance(start_obj, dict) and start_obj.get("ok") is True:
-            sid = str(start_obj.get("session_id") or "").strip()
-            if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", sid):
-                return sid
-    except Exception:
-        pass
-    return fallback
-
-
-def _append_shell_hints(func_name: str, res_str: str) -> str:
-    """Append STATE_HINT to exec_shell_session results when appropriate."""
-    if func_name != "exec_shell_session":
-        return res_str
-    try:
-        obj = json.loads(res_str)
-        if isinstance(obj, dict):
-            if obj.get("error") == "command_failed" and obj.get("alive") is True:
-                res_str += (
-                    "\nSTATE_HINT: command failed but shell session is still alive. "
-                    "Do NOT start a new session; fix and retry in this same session."
-                )
-            elif obj.get("error") in {"session_terminated", "session_not_found"}:
-                res_str += (
-                    "\nSTATE_HINT: shell session is not usable. "
-                    "List sessions, then start one fresh session and use its new session_id."
-                )
-    except Exception:
-        pass
-    return res_str
-
-
-# ------------------------------------------------------------------
-# Review flow (hunk-level review for edit_file)
-# ------------------------------------------------------------------
-
-async def _handle_review_flow(
-    func_name: str,
-    res: Any,
-    res_str: str,
-    *,
-    root: str,
-    request_review: Callable[..., Awaitable[str | None]],
-    log: Callable[..., Awaitable[None]],
-    tool_meta: dict[str, Any],
-) -> tuple[str, bool]:
-    """Handle hunk-level review for edit_file. Returns (updated_res_str, touched_code)."""
-    touched_code = False
-    try:
-        result_data = res if isinstance(res, dict) else {}
-        if result_data.get("ok") and not result_data.get("written"):
-            old_c = result_data.get("old_content", "")
-            new_c = result_data.get("new_content", "")
-            fpath = result_data.get("file", "")
-            if fpath and (old_c or new_c):
-                await log(f"Review pending: {fpath}", type="info", meta=tool_meta)
-                resolved = await request_review(fpath, old_c, new_c)
-                if resolved is not None:
-                    from shellgeist.tools.coder import write_reviewed_content
-                    write_reviewed_content(fpath, resolved, root=root)
-                    res_str = f"Successfully edited {fpath} (review approved, hunks resolved)"
-                    touched_code = True
-                else:
-                    res_str = f"Edit rejected by user for {fpath} in review mode"
-                    await log(res_str, type="info", meta=tool_meta)
-    except Exception as exc:
-        await log(f"review_flow_error: {exc}", type="error", meta=tool_meta)
-    return res_str, touched_code
-
-
-# ------------------------------------------------------------------
-# Main entry point
-# ------------------------------------------------------------------
+    @property
+    def success(self) -> bool:
+        """Heuristic for whether the tool actually did its job."""
+        from shellgeist.runtime.policy import is_failed_result
+        return not is_failed_result(self.observation)
 
 async def execute_tool_call(
     *,
     func_name: str,
     args: dict[str, Any],
     root: str,
-    last_shell_session_id: str | None,
-    task_terminal_only: bool,
     policy: Any,
     loop_guard: Any,
     retry_engine: Any,
-    telemetry: Any,
-    registry: Any,
-    emit_execution_event: Callable[..., Awaitable[None]],
-    log: Callable[..., Awaitable[None]],
-    code_preview_for_tool: Callable[[str, dict[str, Any]], str | None],
-    review_mode: bool = False,
-    request_review: Callable[..., Awaitable[str | None]] | None = None,
 ) -> ToolExecutionOutcome:
-    tool_meta = build_tool_meta(func_name, args)
-    await emit_execution_event("status", "", phase="tool_use", meta={"tool": func_name})
+    """Execute a tool call with loop guard and retries."""
+    verdict, msg = loop_guard.check_call(func_name, args)
+    if verdict != "allow":
+        return ToolExecutionOutcome(kind="observation", func_name=func_name, observation=msg)
 
-    # ── Pre-flight: policy + loop guard ──
-    early = _preflight_checks(
-        func_name, args,
-        task_terminal_only=task_terminal_only,
-        policy=policy,
-        loop_guard=loop_guard,
-        last_shell_session_id=last_shell_session_id,
-        tool_meta=tool_meta,
-    )
-    if early is not None:
-        if early.kind == "observation":
-            await log(f"Calling: {func_name}", type="action", meta=tool_meta)
-            await log(early.observation[:4000], type="observation")
-        return early
+    # 2. Execution with Retry
+    from shellgeist.tools import registry
+    tool = registry.tools.get(func_name)
+    if not tool:
+        return ToolExecutionOutcome(kind="observation", func_name=func_name, observation=f"Error: {func_name} not found")
 
-    code_preview = code_preview_for_tool(func_name, args)
-    if code_preview:
-        await emit_execution_event("code", code_preview, phase="tool_use", meta=tool_meta)
+    async def _run():
+        return tool.execute(**args, root=root)
 
-    # ── Build tool runner with guards ──
-    async def _run_tool_once(_attempt: int) -> Any:
-        call_args = dict(args)
-
-        if func_name in SHELL_SESSION_TOOLS:
-            call_args, healed = auto_heal_session_id(call_args, last_shell_session_id)
-            if healed:
-                await log(f"Auto-heal session_id -> {last_shell_session_id}", type="info")
-
-        if review_mode and func_name == "edit_file":
-            call_args["review_mode"] = True
-
-        if func_name in ("run_shell", "exec_shell_session"):
-            cmd = str(call_args.get("command") or "")
-            if _shell_self_redirects(cmd):
-                await log("Blocked: shell self-redirect (reads and writes same file)", type="error")
-                return (
-                    "INVALID_ACTION: This command reads and writes the same file via shell "
-                    "redirection (e.g. sort file > file), which SILENTLY empties the file. "
-                    "Use read_file to get the content, transform it, then write_file to save."
-                )
-            if _shell_creates_file(cmd) and _targets_project_dir(cmd, root):
-                await log("Blocked: shell file creation detected, use write_file instead", type="error")
-                return (
-                    "INVALID_ACTION: Do NOT create files via shell commands for in-project files. "
-                    "Use the `write_file` tool with `path` and `content` parameters instead. "
-                    'Example: <tool_use>{"name": "write_file", "arguments": {"path": "file.md", "content": "# Title\\nContent"}}</tool_use>'
-                )
-
-        if func_name == "write_file":
-            code = str(call_args.get("content") or "")
-            if _has_lazy_placeholders(code):
-                await log("Failure: Laziness detected", type="error")
-                return "INVALID_ACTION: Placeholders detected. Re-write the file FULLY."
-
-        tool = registry.tools.get(func_name)
-        return tool.execute(**call_args, root=root) if tool else f"Error: {func_name} not found."
-
-    async def _on_tool_retry(attempt: int, error_class: str, reason: str, delay_ms: int, _last: Any | None) -> None:
-        await telemetry.emit_retry_status(
-            "tool",
-            attempt=attempt,
-            error_class=error_class,
-            reason=reason,
-            delay_ms=delay_ms,
-            tool=func_name,
-        )
-        await log(
-            f"Retry tool {func_name} (attempt {attempt + 1}) in {delay_ms}ms [{error_class}] {reason}",
-            type="info",
-            meta=tool_meta,
-        )
-
-    # ── Execute with retry ──
-    await log(f"Calling: {func_name}", type="action", meta=tool_meta)
-    res, tool_report = await retry_engine.run_async(
+    res = await retry_engine.run_async(
         key=f"tool:{func_name}",
-        operation=_run_tool_once,
-        classify_result=lambda result: classify_result_payload(result, tool_name=func_name),
-        on_retry=_on_tool_retry,
+        operation=lambda _: _run(),
+        classify_result=lambda r: ("transient" if "timeout" in str(r).lower() else None, "")
     )
-
-    res = res if tool_report.outcome == "success" else f"Error: {tool_report.reason or tool_report.error_class or 'tool_failed'}"
-    if tool_report.outcome != "success":
-        await log(
-            f"Tool failure after retries: {func_name} [{tool_report.error_class or 'unknown'}] {tool_report.reason}",
-            type="info",
-            meta=tool_meta,
-        )
-
-    # ── Post-process ──
-    updated_session_id = _extract_session_id(func_name, res, last_shell_session_id)
-    res_str = _append_shell_hints(func_name, str(res or "Success"))
-    touched_code, verified_execution = detect_execution_evidence(func_name, res_str)
-
-    blocked_outcome, blocked_msg = loop_guard.record_outcome(func_name, args, res_str)
-    if blocked_outcome and blocked_msg:
-        await log(blocked_msg, type="info", meta=tool_meta)
-
-    # ── Review mode: hunk-level review for edit_file ──
-    if review_mode and func_name == "edit_file" and tool_report.outcome == "success" and request_review:
-        res_str, review_touched = await _handle_review_flow(
-            func_name, res, res_str,
-            root=root,
-            request_review=request_review,
-            log=log,
-            tool_meta=tool_meta,
-        )
-        if review_touched:
-            touched_code = True
-
-    await log(res_str[:4000], type="observation")
-
-    # ── Emit file_changed event for write_file / edit_file ──
-    if func_name in ("write_file", "edit_file") and tool_report.outcome == "success":
-        file_path = str(args.get("path") or args.get("file_path") or args.get("file") or "")
-        if file_path and "Successfully" in res_str:
-            await emit_execution_event(
-                "file_changed",
-                file_path,
-                phase="tool_use",
-                meta={
-                    "file": file_path,
-                    "root": root,
-                    "tool": func_name,
-                },
-            )
-
+    
+    res_str = str(res or "Success")
+    loop_guard.record_outcome(func_name, args, res_str)
+    
     return ToolExecutionOutcome(
         kind="observation",
         func_name=func_name,
-        observation=res_str,
-        last_shell_session_id=updated_session_id,
-        touched_code=touched_code,
-        verified_execution=verified_execution,
+        observation=res_str
     )

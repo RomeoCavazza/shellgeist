@@ -1,15 +1,26 @@
-"""UI event emitter: streams v5 execution events to connected clients.
-
-Only v5 ``execution_event`` frames are sent.  Legacy ``log`` / ``status``
-frames were previously duplicated alongside the v5 events, causing the
-frontend to render every message twice when both handlers fired.
-"""
+"""Low-level transport and UI event emission."""
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
-from shellgeist.io.transport import safe_drain, send_json
+from shellgeist.agent.signals import UIEvent, UIEventFrame
+
+
+def send_json(writer: asyncio.StreamWriter, payload: dict[str, Any]) -> None:
+    """Write a JSON-newline frame to *writer* (sync, no drain)."""
+    writer.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+
+
+async def safe_drain(writer: asyncio.StreamWriter) -> bool:
+    """Drain the writer buffer; return *False* on client disconnect."""
+    try:
+        await writer.drain()
+        return True
+    except (ConnectionResetError, BrokenPipeError):
+        return False
+
 
 _LOG_TYPE_TO_CHANNEL: dict[str, str] = {
     "thought": "reasoning",
@@ -27,7 +38,7 @@ def channel_from_log_type(log_type: str) -> str:
 
 
 class UIEventEmitter:
-    def __init__(self, writer: Any | None, reader: Any | None = None) -> None:
+    def __init__(self, writer: asyncio.StreamWriter | None, reader: asyncio.StreamReader | None = None) -> None:
         self.writer = writer
         self.reader = reader
 
@@ -41,27 +52,24 @@ class UIEventEmitter:
     ) -> None:
         if not self.writer:
             return
-        payload: dict[str, Any] = {
-            "type": "execution_event",
-            "event": {
-                "version": "v1",
-                "channel": channel,
-                "content": content,
-            },
-        }
-        if phase:
-            payload["event"]["phase"] = phase
-        if meta:
-            payload["event"]["meta"] = meta
-        send_json(self.writer, payload)
+        
+        event_frame = UIEventFrame(
+            channel=channel,
+            content=content,
+            phase=phase,
+            meta=meta or {}
+        )
+        payload = UIEvent(event=event_frame)
+        
+        send_json(self.writer, payload.model_dump())
         await safe_drain(self.writer)
 
     async def log(self, text: str, type: str = "info", meta: dict[str, Any] | None = None) -> None:
-        """Send a single v5 execution_event (no legacy ``log`` frame)."""
+        """Send a single v5 execution_event."""
         await self.emit_execution_event(channel_from_log_type(type), text, meta=meta)
 
     async def status(self, thinking: bool) -> None:
-        """Send a single v5 execution_event (no legacy ``status`` frame)."""
+        """Send a single v5 execution_event status."""
         await self.emit_execution_event(
             "status",
             "",
@@ -70,18 +78,9 @@ class UIEventEmitter:
         )
 
     async def request_approval(self, tool_name: str, args: dict[str, Any]) -> bool:
-        """Send an approval_request event and wait for the client's response.
-
-        Returns True if the user approved, False otherwise.
-        In auto mode (no reader) or on any error, defaults to True.
-        """
+        """Send an approval_request event and wait for response."""
         if not self.writer or not self.reader:
             return True
-
-        # Build a human-readable summary of the tool call
-        args_summary = json.dumps(args, ensure_ascii=False, indent=2)
-        if len(args_summary) > 2000:
-            args_summary = args_summary[:2000] + "\n..."
 
         await self.emit_execution_event(
             "approval_request",
@@ -107,13 +106,7 @@ class UIEventEmitter:
         old_content: str,
         new_content: str,
     ) -> str | None:
-        """Send a review_pending event and wait for the user's review decision.
-
-        The frontend shows inline conflict markers for hunk-level review.
-        Returns the user-resolved content string on approval, or ``None``
-        if the review was rejected.  Defaults to ``None`` when no reader
-        is available.
-        """
+        """Send a review_pending event and wait for decision."""
         if not self.writer or not self.reader:
             return None
 

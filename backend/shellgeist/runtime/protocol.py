@@ -1,8 +1,7 @@
-"""Pydantic models for RPC request/response validation."""
+"""RPC protocol models: requests and results."""
 from __future__ import annotations
 
 from typing import Any, Literal
-
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -17,37 +16,37 @@ class PingRequest(SGBaseRequest):
 
 class GitStatusRequest(SGBaseRequest):
     cmd: Literal["git_status"]
-    root: str
+    root: str | None = None
 
 
 class GitAddRequest(SGBaseRequest):
     cmd: Literal["git_add"]
-    root: str
+    root: str | None = None
     file: str
 
 
 class GitRestoreRequest(SGBaseRequest):
     cmd: Literal["git_restore"]
-    root: str
+    root: str | None = None
     file: str
 
 
 class PlanRequest(SGBaseRequest):
     cmd: Literal["plan"]
-    root: str
+    root: str | None = None
     goal: str
 
 
 class EditRequest(SGBaseRequest):
     cmd: Literal["edit"]
-    root: str
+    root: str | None = None
     file: str
     instruction: str
 
 
 class EditApplyRequest(SGBaseRequest):
     cmd: Literal["edit_apply"]
-    root: str
+    root: str | None = None
     file: str
     patch: str
     instruction: str | None = None
@@ -57,7 +56,7 @@ class EditApplyRequest(SGBaseRequest):
 
 class EditApplyFullRequest(SGBaseRequest):
     cmd: Literal["edit_apply_full"]
-    root: str
+    root: str | None = None
     file: str
     text: str
     instruction: str | None = None
@@ -68,14 +67,14 @@ class EditApplyFullRequest(SGBaseRequest):
 class AgentTaskRequest(SGBaseRequest):
     cmd: Literal["agent_task"]
     goal: str
-    root: str
+    root: str | None = None
     session_id: str = "default"
     mode: Literal["auto", "review"] = "auto"
 
 
 class ShellRequest(SGBaseRequest):
     cmd: Literal["shell"]
-    root: str
+    root: str | None = None
     task: str
 
 
@@ -88,7 +87,7 @@ class HistoryRequest(SGBaseRequest):
     cmd: Literal["get_history"]
     session_id: str = "default"
 
-# Union for all supported requests
+
 SGRequest = (
     PingRequest
     | GitStatusRequest
@@ -107,7 +106,11 @@ SGRequest = (
 
 class SGResult(BaseModel):
     ok: bool
+    status: Literal["completed", "failed", "stopped", "running"] = "completed"
     type: str = "result"
     error: str | None = None
     detail: str | None = None
     data: dict[str, Any] = Field(default_factory=dict)
+    logs: list[str] = Field(default_factory=list)
+    response: str | None = None
+    retry: dict[str, Any] | None = None

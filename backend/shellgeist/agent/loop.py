@@ -5,7 +5,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from shellgeist.agent.models import Message, SGResult, UIEvent
+from shellgeist.agent.messages import Message
+from shellgeist.runtime.protocol import SGResult
+from shellgeist.agent.signals import UIEvent
 from shellgeist.agent.orchestrator import (
     ToolCallQueue,
     build_schema_error_message,
@@ -26,8 +28,8 @@ from shellgeist.runtime.telemetry import TelemetryEmitter
 from shellgeist.runtime.transport import UIEventEmitter
 from shellgeist.tools import load_tools, registry
 from shellgeist.tools.executor import execute_tool_call
-from shellgeist.tools.parser import parse_xml_tool_use
-from shellgeist.tools.policy import ToolPolicy, LoopGuard, RetryEngine, RetryConfig
+from shellgeist.agent.parsing.parser import parse_xml_tool_use
+from shellgeist.runtime.policy import LoopGuard, RetryEngine, RetryConfig
 
 
 def _debug_log(msg: str) -> None:
@@ -76,15 +78,21 @@ class Agent:
         ui = UIEventEmitter(writer, reader=reader)
         review_mode = (mode == "review")
 
+        # Strip internal PROTOCOL_VIOLATION feedbacks from history before the new task
+        # so failed attempts from the previous turn don't poison the LLM context.
+        self.history = [
+            m for m in self.history
+            if not (m.get("role") == "user" and m.get("content", "").startswith("PROTOCOL_VIOLATION:"))
+        ]
+
         self.history = load_recent_history(self.history, session_id=session_id)
         append_user_goal_once(self.history, session_id=session_id, goal=goal)
 
-        max_steps = 15
+        max_steps = 8
         logs: list[str] = []
         any_tool_succeeded = False
         last_shell_session_id = None
         loop_guard = LoopGuard()
-        policy = ToolPolicy(root=self.root, session_id=session_id)
         retry_engine = RetryEngine(RetryConfig.from_env())
 
         telemetry = TelemetryEmitter(
@@ -145,7 +153,10 @@ class Agent:
             for tc in tool_calls:
                 func_name = tc.get("name")
                 args = tc.get("arguments", {})
-                
+
+                # Emit the tool call to the sidebar so the user can see what's happening
+                await ui.emit_execution_event("tool_call", func_name or "", phase="tool_use", meta={"tool": func_name, "args": args})
+
                 # Manual approval logic...
                 if review_mode:
                     approved = await ui.request_approval(func_name, args)
@@ -156,16 +167,30 @@ class Agent:
                     func_name=func_name,
                     args=args,
                     root=self.root,
-                    policy=policy,
+                    policy=None,
                     loop_guard=loop_guard,
                     retry_engine=retry_engine,
                 )
-                
+
                 if outcome.success:
                     any_tool_succeeded = True
-                
+
+                # Emit the tool result to the sidebar immediately — don't wait for LLM to re-present it
+                await ui.emit_execution_event("tool_result", outcome.observation, phase="tool_use", meta={"tool": func_name})
+
                 obs = f"<tool_observation name=\"{func_name}\">\n{outcome.observation}\n</tool_observation>"
                 self.history.append({"role": "user", "content": obs})
                 save_db_message(session_id, "user", obs, log_type="context")
 
+        # Loop exhausted without completion — prefer the last tool observation over the
+        # last LLM output (which is likely a <tool_use> tag, not useful to the user).
+        last_obs = None
+        for m in reversed(self.history):
+            content = m.get("content", "")
+            if m.get("role") == "user" and "<tool_observation" in content:
+                import re as _re
+                last_obs = _re.sub(r"</?tool_observation[^>]*>", "", content).strip()
+                break
+        last_response = last_obs or logs[-1] if (last_obs or logs) else "ShellGeist: max steps reached without completing the task."
+        await ui.emit_execution_event("response", last_response, phase="done", meta={"final": True})
         return {"ok": True, "status": "stopped", "logs": logs}

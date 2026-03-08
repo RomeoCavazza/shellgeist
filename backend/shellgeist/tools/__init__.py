@@ -20,10 +20,23 @@ def load_tools() -> None:
     global _loaded
     if _loaded:
         return
-    # Each module decorates functions with @registry.register on import.
-    import shellgeist.tools.coder as _coder  # noqa: F401
-    import shellgeist.tools.fs as _fs  # noqa: F401
-    import shellgeist.tools.shell as _shell  # noqa: F401
+    
+    modules = [
+        "shellgeist.tools.edit",
+        "shellgeist.tools.fs",
+        "shellgeist.tools.shell",
+    ]
+    
+    import importlib
+    for mod_name in modules:
+        try:
+            importlib.import_module(mod_name)
+        except Exception as e:
+            # We don't want to crash everything if one tool fails to load,
+            # but we should definitely know about it.
+            import sys
+            print(f"ERROR: Failed to load tool module {mod_name}: {e}", file=sys.stderr)
+
     _loaded = True
 
 
