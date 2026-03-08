@@ -66,12 +66,12 @@ local function define_highlights()
   -- Chrome
   hl(0, "SGBorder",       { fg = "#3b82f6", ctermfg = 69 })
   hl(0, "SGTitle",        { fg = "#1e222a", bg = "#98c379", ctermfg = 235, ctermbg = 114, bold = true })
-  -- User
-  hl(0, "SGUser",         { fg = "#98c379", ctermfg = 114, bold = true })
-  hl(0, "SGUserBody",     { fg = "#abb2bf", ctermfg = 249 })
-  -- Response
-  hl(0, "SGResponse",     { fg = "#61afef", ctermfg = 75, bold = true })
-  hl(0, "SGResponseBody", { fg = "#dcdfe4", ctermfg = 254 })
+  -- User: header "󰀄 User" only in blue; body stays default
+  hl(0, "SGUser",         { fg = "#61afef", ctermfg = 75, bold = true })
+  hl(0, "SGUserBody",     { fg = "#e0e0e0", ctermfg = 253 })
+  -- Response / Assistant: header "󰚩 Assistant" only in gray; body stays default
+  hl(0, "SGResponse",     { fg = "#7f848e", ctermfg = 243, bold = true })
+  hl(0, "SGResponseBody", { fg = "#e0e0e0", ctermfg = 253 })
   -- Thinking
   hl(0, "SGThinking",     { fg = "#7f848e", ctermfg = 243, italic = true })
   -- Tool cards
@@ -197,12 +197,36 @@ local function render_user(text)
   scroll_bottom()
 end
 
+--- Returns true if s contains only <tool_use>...</tool_use> and whitespace (no visible prose).
+local function content_is_only_tool_use(s)
+  if not s or s == "" then return true end
+  local stripped = s:gsub("<tool_use>[%s%S]-</tool_use>", ""):gsub("%s+", " "):gsub("^%s*", ""):gsub("%s*$", "")
+  return stripped == ""
+end
+
+--- Strip Status: DONE / Status: FAILED lines and trailing status from text (hidden in UI).
+local function strip_status_lines(s)
+  if not s or s == "" then return s end
+  local lines = vim.split(s, "\n", { plain = true })
+  local out = {}
+  for _, ln in ipairs(lines) do
+    local t = vim.trim(ln)
+    if t ~= "" and not t:match("^Status:%s*(DONE|FAILED)") then
+      table.insert(out, ln)
+    end
+  end
+  s = table.concat(out, "\n")
+  -- Remove trailing " Status: DONE" or " Status: FAILED: ..." from last line
+  s = s:gsub("%s*Status:%s*DONE%s*$", "")
+  s = s:gsub("%s*Status:%s*FAILED[^\n]*$", "")
+  return vim.trim(s)
+end
+
 local function render_response(text)
   -- Strip any "Thought:" prefix that was already emitted separately
   local body = sanitize(text)
   body = body:gsub("^%s*Thoughts?:%s*.-\n\n", "")
-  body = body:gsub("^%s*Status:%s*DONE%s*$", "")
-  body = vim.trim(body)
+  body = strip_status_lines(body)
   if body == "" then return end
 
   local header = "󰚩 Assistant"
@@ -757,7 +781,7 @@ function M.open()
       border = {
         style = "rounded",
         highlight = "SGBorder",
-        text = { top = "  ShellGeist ", top_align = "center" },
+        text = { top = "  [Response] ", top_align = "center" },
       },
       buf_options = { filetype = "shellgeist", buftype = "nofile" },
       win_options = {
@@ -827,15 +851,70 @@ function M.render_welcome()
   if not M.chat or not buf_valid(M.chat.bufnr) then return end
   M._streaming_assistant = false
   M._streaming_thinking = false
-  local lines = {
-    " ShellGeist",
-    "",
-    "Ready to assist you.",
-    "───────────────────────────────────────────",
-    "  review: [a] accept  [r] reject  [o] open",
-    "  modes:  :SGMode auto | review",
-    "  nav:    q close  <Esc> → chat",
+  -- ASCII banner "SHELLGEIST" — scale to fit sidebar (every 2nd char, UTF-8 safe)
+  local function utf8_byte_len(b)
+    if b == nil or b < 128 then return 1 end
+    if b >= 0x80 and b < 0xC0 then return 1 end -- continuation byte, do not treat as lead
+    if b < 0xE0 then return 2 end -- 110xxxxx
+    if b < 0xF0 then return 3 end -- 1110xxxx
+    if b < 0xF8 then return 4 end -- 11110xxx
+    return 1
+  end
+  local function shrink_line(s)
+    local spans = {}
+    local i = 1
+    while i <= #s do
+      local b = s:byte(i)
+      local len = math.min(utf8_byte_len(b), #s - i + 1)
+      spans[#spans + 1] = { start = i, ["end"] = i + len - 1 }
+      i = i + len
+    end
+    if #spans < 2 then return s end
+    local out = {}
+    for j = 1, #spans, 2 do
+      local sp = spans[j]
+      out[#out + 1] = s:sub(sp.start, sp["end"])
+    end
+    return table.concat(out)
+  end
+  local banner = {
+    "  ██████  ██░ ██ ▓█████  ██▓     ██▓      ▄████ ▓█████  ██▓  ██████ ▄▄▄█████▓",
+    "▒██    ▒ ▓██░ ██▒▓█   ▀ ▓██▒    ▓██▒     ██▒ ▀█▒▓█   ▀ ▓██▒▒██    ▒ ▓  ██▒ ▓▒",
+    "░ ▓██▄   ▒██▀▀██░▒███   ▒██░    ▒██░    ▒██░▄▄▄░▒███   ▒██▒░ ▓██▄   ▒ ▓██░ ▒░",
+    "  ▒   ██▒░▓█ ░██ ▒▓█  ▄ ▒██░    ▒██░    ░▓█  ██▓▒▓█  ▄ ░██░  ▒   ██▒░ ▓██▓ ░ ",
+    "▒██████▒▒░▓█▒░██▓░▒████▒░██████▒░██████▒░▒▓███▀▒░▒████▒░██░▒██████▒▒  ▒██▒ ░ ",
+    "▒ ▒▓▒ ▒ ░ ▒ ░░▒░▒░░ ▒░ ░░ ▒░▓  ░░ ▒░▓  ░ ░▒   ▒ ░░ ▒░ ░░▓  ▒ ▒▓▒ ▒ ░  ▒ ░░   ",
+    "░ ░▒  ░ ░ ▒ ░▒░ ░ ░ ░  ░░ ░ ▒  ░░ ░ ▒  ░  ░   ░  ░ ░  ░ ▒ ░░ ░▒  ░ ░    ░    ",
+    "░  ░  ░   ░  ░░ ░   ░     ░ ░     ░ ░   ░ ░   ░    ░    ▒ ░░  ░  ░    ░      ",
+    "      ░   ░  ░  ░   ░  ░    ░  ░    ░  ░      ░    ░  ░ ░        ░           ",
   }
+  local lines = { "" }
+  for _, ln in ipairs(banner) do
+    table.insert(lines, shrink_line(ln))
+  end
+  -- Align: pad each line so first non-space is at same column (fix 1st row shifted left)
+  do
+    local max_start = 0
+    for i = 2, #lines do
+      local pos = lines[i]:find("%S")
+      if pos then max_start = math.max(max_start, pos) end
+    end
+    for i = 2, #lines do
+      local pos = lines[i]:find("%S")
+      if pos and pos < max_start then
+        lines[i] = string.rep(" ", max_start - pos) .. lines[i]
+      end
+    end
+    -- First banner line was originally indented more; add one extra space so it lines up visually
+    if lines[2] and lines[2]:find("^%s") then
+      lines[2] = " " .. lines[2]
+    end
+  end
+  table.insert(lines, "")
+  table.insert(lines, "───────────────────────────────────────────")
+  table.insert(lines, "  review: [a] accept  [r] reject  [o] open")
+  table.insert(lines, "  modes:  :SGMode auto | review")
+  table.insert(lines, "  nav:    q close  <Esc> → chat")
 
   -- Show last known workspace context (root / session / mode) for quick diagnostics.
   local ok_sg, sg = pcall(require, "shellgeist")
@@ -853,12 +932,15 @@ function M.render_welcome()
   table.insert(lines, "───────────────────────────────────────────")
   table.insert(lines, "")
   pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, 0, -1, false, lines)
-  pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGTitle", 0, 0, -1)
-  local sep2 = math.max(3, #lines - 1)  -- bottom separator line
-  for _, i in ipairs({ 3, 7, sep2 }) do
+  -- Banner: SGThinking only (no SGTitle → avoids green inverse on first lines)
+  for line_0 = 1, 9 do
+    pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGThinking", line_0, 0, -1)
+  end
+  local sep2 = math.max(12, #lines - 1)
+  for _, i in ipairs({ 11, 14, sep2 }) do
     pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGCardBorder", i, 0, -1)
   end
-  for _, i in ipairs({ 4, 5, 6 }) do
+  for _, i in ipairs({ 12, 13, 14 }) do
     pcall(vim.api.nvim_buf_add_highlight, M.chat.bufnr, chat_ns, "SGThinking", i, 0, -1)
   end
 end
@@ -951,10 +1033,48 @@ function M.append_text(text, msg_type, meta)
   -- Any non-chunk type ends streaming
   if M._streaming_assistant then
     M._streaming_assistant = false
-    -- Add separator after streamed response
-    local sep = buf_append({ "───────────────────────────────────────────" })
-    if sep then hl_range(sep, 1, "SGCardBorder") end
-    buf_append({ "" })
+    -- If the streamed content was only <tool_use>...</tool_use>, remove that block (keep tools active but hidden)
+    local ok, line_count = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
+    if ok and line_count >= 1 then
+      local ok_get, line_list = pcall(vim.api.nvim_buf_get_lines, M.chat.bufnr, 0, line_count, false)
+      if ok_get and line_list and #line_list >= 1 then
+        local last_assistant_idx = nil
+        for i = line_count, 1, -1 do
+          if (line_list[i] or ""):find("󰚩 Assistant") then
+            last_assistant_idx = i
+            break
+          end
+        end
+        if last_assistant_idx and last_assistant_idx < line_count then
+          local content_lines = {}
+          for j = last_assistant_idx + 1, line_count do
+            table.insert(content_lines, line_list[j] or "")
+          end
+          local content = table.concat(content_lines, "\n")
+          if content_is_only_tool_use(content) then
+            pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_assistant_idx - 1, line_count, false, {})
+            scroll_bottom()
+            -- fall through to dispatch (do not add separator)
+          else
+            local sep = buf_append({ "───────────────────────────────────────────" })
+            if sep then hl_range(sep, 1, "SGCardBorder") end
+            buf_append({ "" })
+          end
+        else
+          local sep = buf_append({ "───────────────────────────────────────────" })
+          if sep then hl_range(sep, 1, "SGCardBorder") end
+          buf_append({ "" })
+        end
+      else
+        local sep = buf_append({ "───────────────────────────────────────────" })
+        if sep then hl_range(sep, 1, "SGCardBorder") end
+        buf_append({ "" })
+      end
+    else
+      local sep = buf_append({ "───────────────────────────────────────────" })
+      if sep then hl_range(sep, 1, "SGCardBorder") end
+      buf_append({ "" })
+    end
   end
   if M._streaming_thinking then
     M._streaming_thinking = false
@@ -989,9 +1109,10 @@ function M.append_text(text, msg_type, meta)
             if last_sep_idx and last_assistant_idx then break end
           end
           if last_assistant_idx and last_sep_idx and last_assistant_idx < last_sep_idx then
-            local body = sanitize(text):gsub("^%s*Thoughts?:%s*.-\n\n", ""):gsub("^%s*Status:%s*DONE%s*$", "")
+            local body = sanitize(text):gsub("^%s*Thoughts?:%s*.-\n\n", "")
+            body = strip_status_lines(body)
             body = vim.trim(body)
-            if body ~= "" then
+            if body ~= "" and not content_is_only_tool_use(body) then
               local new_lines = { "󰚩 Assistant" }
               for _, ln in ipairs(vim.split(body, "\n", { plain = true })) do
                 table.insert(new_lines, ln)
@@ -1004,9 +1125,18 @@ function M.append_text(text, msg_type, meta)
               scroll_bottom()
               return
             end
+            if body == "" or content_is_only_tool_use(body) then
+              -- Hide tool-only block: remove assistant header + content + separator
+              pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_assistant_idx - 1, last_sep_idx, false, {})
+              scroll_bottom()
+              return
+            end
           end
         end
       end
+    end
+    if content_is_only_tool_use(strip_status_lines(sanitize(text))) then
+      return
     end
     render_response(text)
   elseif msg_type == "thinking" or msg_type == "thought" then

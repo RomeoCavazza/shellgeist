@@ -42,6 +42,8 @@ def read_file(path: str | None = None, root: str = "", file_path: str | None = N
     p = resolve_repo_path(Path(root), target)
     if not p.exists():
         hint = f" Hint: try a relative path like '{Path(target).name}' instead." if target.startswith("/") else ""
+        if not hint and ("/" in target or "Bureau" in target or target.count(os.sep) > 1):
+            hint = " Use a path relative to project root, e.g. README.md or backend/main.py."
         raise FileNotFoundError(f"File not found: {target}.{hint}")
     return p.read_text(encoding="utf-8", errors="replace")
 
