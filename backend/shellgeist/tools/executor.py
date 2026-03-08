@@ -51,7 +51,7 @@ async def execute_tool_call(
         classify_result=lambda r: ("transient" if "timeout" in str(r).lower() else None, "")
     )
     
-    res_str = str(res or "Success")
+    res_str = str(res) if res is not None else "Success"
     loop_guard.record_outcome(func_name, args, res_str)
     
     return ToolExecutionOutcome(

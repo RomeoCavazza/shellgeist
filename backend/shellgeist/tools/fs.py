@@ -86,7 +86,7 @@ class WriteFileInput(BaseModel):
 
 
 @registry.register(
-    description="Write content to a file. Overwrites if exists. Returns a unified diff when modifying an existing file.",
+    description="Write content to a file. Overwrites if exists. Content must be valid, runnable code (e.g. print('hello'), not just text). Returns a unified diff when modifying an existing file.",
     input_model=WriteFileInput
 )
 def write_file(path: str | None = None, content: str = "", root: str = "", file_path: str | None = None, file: str | None = None, **kwargs: Any) -> str:
@@ -138,6 +138,15 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
 )
 def list_files(directory: str = ".", root: str = "", recursive: bool = False, depth: int = 3, max_results: int = 100, **kwargs: Any) -> list[str]:
     p = resolve_repo_path(Path(root), directory)
+
+    # Guard: refuse to scan a home directory (likely misconfigured root)
+    home = Path.home().resolve()
+    if p.resolve() == home:
+        raise PermissionError(
+            f"WORKSPACE ROOT is your HOME directory ({p}). "
+            "Open Neovim inside a project folder first."
+        )
+
     if not p.exists() or not p.is_dir():
         hint = f" Hint: try a relative path like '{Path(directory).name}' instead." if directory.startswith("/") else ""
         raise FileNotFoundError(f"Directory not found: {directory}.{hint}")
