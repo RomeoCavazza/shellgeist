@@ -39,9 +39,13 @@ ShellGeist is an AI-powered code assistant that runs inside Neovim. It connects 
   <img src="assets/shellgeist.png" alt="ShellGeist" width="720" style="display: block; margin-left: auto; margin-right: auto;" />
 </p>
 
+*Screenshot: chat sidebar with request/response and tool outputs.*
+
 ---
 
 ## Project structure
+
+Repository layout: Python backend (one package under `backend/shellgeist/`), Neovim plugin in `nvim/`, and top-level scripts for running the daemon.
 
 ```
 shellgeist/
@@ -74,6 +78,8 @@ shellgeist/
 
 ## Architecture
 
+High-level view: the editor talks to a single Python daemon over a Unix socket; the daemon runs the agent (LLM + tools) and streams events back.
+
 ```mermaid
 flowchart LR
   subgraph Editor
@@ -103,39 +109,27 @@ flowchart LR
 
 ### Request flow
 
+What happens when you run `:SGAgent "fix the bug"`: the goal is sent to the backend, which streams a request to the LLM; when the model returns text and tool calls, the backend runs the tools and streams events back so the sidebar updates in real time.
+
 ```mermaid
 sequenceDiagram
-  participant U as User
-  participant N as Neovim
-  participant RPC as Lua RPC
-  participant D as Daemon
-  participant A as Agent
-  participant LLM as LLM API
-  participant T as Tools
+  participant User
+  participant Neovim
+  participant Backend
+  participant LLM
 
-  U->>N: :SGAgent "fix the bug"
-  N->>RPC: goal + mode
-  RPC->>D: JSON-lines (agent_task)
-  D->>A: run_task()
-  loop Agent loop
-    A->>LLM: messages + tool schemas
-    LLM-->>A: stream (text / tool_calls)
-    alt tool_calls
-      A->>T: execute (read_file, run_shell, …)
-      T-->>A: result
-      A->>RPC: stream tool result (event)
-      RPC->>N: update sidebar
-    else text only
-      A->>RPC: stream chunk
-      RPC->>N: append to response
-    end
-  end
-  A->>D: done
-  D->>RPC: result
-  RPC->>N: close stream
+  User->>Neovim: :SGAgent "fix the bug"
+  Neovim->>Backend: goal (JSON)
+  Backend->>LLM: stream request
+  LLM-->>Backend: text + tool_calls
+  Backend->>Backend: run tools
+  Backend-->>Neovim: stream events
+  Neovim-->>User: sidebar updates
 ```
 
 ### Agent loop (backend)
+
+Inside the backend, the agent repeatedly builds a message list (with tool schemas), calls the LLM, and either executes tool calls (then appends results and loops) or finishes with a final answer.
 
 ```mermaid
 flowchart TB
@@ -159,6 +153,8 @@ flowchart TB
 ---
 
 ## Commands
+
+Main Neovim commands and how to run the backend.
 
 | Command | Description |
 |--------|-------------|
@@ -187,7 +183,7 @@ shellgeist
 
 ## Contributing
 
-Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests, linting, and the pull request process.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, tests, linting, and the pull request process.
 
 ---
 
