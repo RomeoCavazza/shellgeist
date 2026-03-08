@@ -36,7 +36,7 @@ ShellGeist is an AI-powered code assistant that runs inside Neovim. It connects 
 - **Streaming UI**: Chat sidebar with [Response] / [Request], inline diff review, and conflict resolution.
 
 <p align="center">
-  <img src="assets/shellgeist.png" alt="ShellGeist" width="480" style="display: block; margin-left: auto; margin-right: auto;" />
+  <img src="assets/shellgeist.png" alt="ShellGeist" width="720" style="display: block; margin-left: auto; margin-right: auto;" />
 </p>
 
 ---
