@@ -1,6 +1,6 @@
 <div align="center">
 
-```
+<pre>
   ██████  ██░ ██ ▓█████  ██▓     ██▓      ▄████ ▓█████  ██▓  ██████ ▄▄▄█████▓
 ▒██    ▒ ▓██░ ██▒▓█   ▀ ▓██▒    ▓██▒     ██▒ ▀█▒▓█   ▀ ▓██▒▒██    ▒ ▓  ██▒ ▓▒
 ░ ▓██▄   ▒██▀▀██░▒███   ▒██░    ▒██░    ▒██░▄▄▄░▒███   ▒██▒░ ▓██▄   ▒ ▓██░ ▒░
@@ -10,9 +10,7 @@
 ░ ░▒  ░ ░ ▒ ░▒░ ░ ░ ░  ░░ ░ ▒  ░░ ░ ▒  ░  ░   ░  ░ ░  ░ ▒ ░░ ░▒  ░ ░    ░    
 ░  ░  ░   ░  ░░ ░   ░     ░ ░     ░ ░   ░ ░   ░    ░    ▒ ░░  ░  ░    ░      
       ░   ░  ░  ░   ░  ░    ░  ░    ░  ░      ░    ░  ░ ░        ░           
-```
-
-<img src="assets/shellgeist.png" alt="ShellGeist" width="480" style="display: block; margin-left: auto; margin-right: auto;" />
+</pre>
 
 </div>
 
@@ -36,6 +34,10 @@ ShellGeist is an AI-powered code assistant that runs inside Neovim. It connects 
 - **Daemon + plugin**: Python backend (Unix socket server) and Lua Neovim plugin; one process per workspace.
 - **Tool-first**: The model calls tools (e.g. `list_files`, `read_file`, `run_shell`); you see results and can approve in review mode.
 - **Streaming UI**: Chat sidebar with [Response] / [Request], inline diff review, and conflict resolution.
+
+<p align="center">
+  <img src="assets/shellgeist.png" alt="ShellGeist" width="480" style="display: block; margin-left: auto; margin-right: auto;" />
+</p>
 
 ---
 
