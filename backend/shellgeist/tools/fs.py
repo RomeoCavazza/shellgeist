@@ -59,8 +59,14 @@ def get_repo_map(root: str, **kwargs: Any) -> str:
     """
     Returns a string representation of the file tree.
     """
+    p_root = Path(root).resolve()
+    home = Path.home().resolve()
+    if p_root == home:
+        raise PermissionError(
+            f"WORKSPACE ROOT is your HOME directory ({p_root}). "
+            "Open Neovim inside a project folder first."
+        )
     out = []
-    p_root = Path(root)
     for dirpath, dirnames, filenames in os.walk(p_root):
         # Prune hidden and ignored dirs in-place
         dirnames[:] = sorted(
