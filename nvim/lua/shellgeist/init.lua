@@ -157,18 +157,28 @@ function M._spawn_daemon(cb)
       for _, ln in ipairs(data or {}) do
         local s = tostring(ln or "")
         if s ~= "" then
-          if s:match("^DEBUG") then
-            if debug_enabled then
+          -- Filter out common Nix informational messages that aren't errors
+          local is_nix_info = s:find("^building") 
+                           or s:find("^fetching")
+                           or s:find("^copying")
+                           or s:find("^evaluating")
+                           or s:find("^instantiating")
+                           or s:find("^derivation")
+
+          if not is_nix_info then
+            if s:match("^DEBUG") then
+              if debug_enabled then
+                table.insert(lines, s)
+              end
+            else
               table.insert(lines, s)
             end
-          else
-            table.insert(lines, s)
           end
         end
       end
       local msg = table.concat(lines, "\n")
       if msg ~= "" then
-        print("[ShellGeist Daemon Error] " .. msg)
+        print("[ShellGeist] " .. msg)
       end
     end,
     on_exit = function(_, code)

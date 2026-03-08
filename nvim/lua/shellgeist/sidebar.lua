@@ -531,8 +531,13 @@ end
 local function render_approval_prompt(meta)
   local tool = meta.tool or "?"
   local reply_fn = meta.reply_fn
+  local is_write = (tool == "write_file")
 
   local prompt_line = "  [a] approve   [r] reject   (" .. tool .. ")"
+  if is_write then
+    prompt_line = "  [o] open   [a] approve   [r] reject   (" .. tool .. ")"
+  end
+
   local start = buf_append({ prompt_line, "" })
   if start then
     hl_range(start, 1, "SGApproval")
@@ -543,12 +548,74 @@ local function render_approval_prompt(meta)
   if not M.chat or not buf_valid(M.chat.bufnr) then return end
   local bufnr = M.chat.bufnr
 
+  local responded = false
+
   local function cleanup_maps()
     pcall(vim.keymap.del, "n", "a", { buffer = bufnr })
     pcall(vim.keymap.del, "n", "r", { buffer = bufnr })
+    if is_write then
+      pcall(vim.keymap.del, "n", "o", { buffer = bufnr })
+    end
   end
 
-  local responded = false
+  if is_write then
+    vim.keymap.set("n", "o", function()
+      if responded then return end
+      responded = true
+      cleanup_maps()
+      if start and buf_valid(bufnr) then
+        pcall(vim.api.nvim_buf_set_lines, bufnr, start, start + 1, false, { "  ↗ Opened in editor" })
+        hl_range(start, 1, "SGCardBody")
+      end
+
+      -- Extract file path and new content from tool args
+      local args = meta.args or {}
+      local file_rel = args.path or args.file_path or args.file or ""
+      local new_content = args.content or ""
+      local file_root = meta.root or "" -- may need to get from global state if local meta missing
+
+      local filepath = file_rel
+      if file_root ~= "" and not filepath:match("^/") then
+        filepath = file_root .. "/" .. filepath
+      end
+
+      -- Get current file content (old content)
+      local old_content = ""
+      if vim.fn.filereadable(filepath) == 1 then
+        old_content = table.concat(vim.fn.readfile(filepath), "\n") .. "\n"
+      end
+
+      -- Switch to editor window
+      local sidebar_wins = {}
+      if M.chat and win_valid(M.chat.winid) then sidebar_wins[M.chat.winid] = true end
+      if M.prompt and win_valid(M.prompt.winid) then sidebar_wins[M.prompt.winid] = true end
+      local target_win = nil
+      for _, w in ipairs(vim.api.nvim_list_wins()) do
+        if not sidebar_wins[w] and vim.api.nvim_win_get_config(w).relative == "" then
+          target_win = w
+          break
+        end
+      end
+      if target_win then vim.api.nvim_set_current_win(target_win) end
+
+      -- Show conflict markers
+      local conflict = require("shellgeist.conflict")
+      conflict.show_inline(filepath, old_content, new_content, {
+        on_complete = function(resolved_content)
+          if resolved_content then
+            -- Note: for write_file tool approval, we don't send resolved_content back to the TOOL,
+            -- because the tool is write_file(content=X).
+            -- However, we can send approved=true.
+            -- FUTURE: maybe the protocol should support updating tool args in mid-flight?
+            if reply_fn then reply_fn({ cmd = "approval_response", approved = true }) end
+          else
+            if reply_fn then reply_fn({ cmd = "approval_response", approved = false }) end
+          end
+          M.set_thinking(true)
+        end,
+      })
+    end, { buffer = bufnr, silent = true, noremap = true, desc = "SG: open for review" })
+  end
 
   vim.keymap.set("n", "a", function()
     if responded then return end

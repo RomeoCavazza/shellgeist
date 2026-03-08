@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Any
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -598,7 +599,7 @@ atexit.register(_PTY_MANAGER.close_all)
     description="Execute a shell command in the repository root.",
     input_model=ShellCommandInput
 )
-def run_shell(command: str, root: str) -> str:
+def run_shell(command: str, root: str, **kwargs: Any) -> str:
     """
     Execute a shell command and return its output.
     """
@@ -660,6 +661,7 @@ def start_shell_session(
     command: str | None = None,
     cwd: str | None = None,
     root: str = "",
+    **kwargs: Any,
 ) -> str:
     try:
         # Be tolerant to LLM argument drift: some models send `command` instead of `shell`.
@@ -683,6 +685,7 @@ def write_shell_session(
     input: str,
     append_newline: bool = True,
     root: str = "",
+    **kwargs: Any,
 ) -> str:
     del root
     try:
@@ -705,6 +708,7 @@ def read_shell_session(
     timeout_ms: int = 250,
     max_bytes: int = 65536,
     root: str = "",
+    **kwargs: Any,
 ) -> str:
     del root
     try:
@@ -731,6 +735,7 @@ def exec_shell_session(
     wait_ms: int = 350,
     max_bytes: int = 65536,
     root: str = "",
+    **kwargs: Any,
 ) -> str:
     del root
     try:
@@ -749,7 +754,7 @@ def exec_shell_session(
     description="Close a persistent PTY shell session.",
     input_model=CloseShellSessionInput,
 )
-def close_shell_session(session_id: str, force: bool = False, root: str = "") -> str:
+def close_shell_session(session_id: str, force: bool = False, root: str = "", **kwargs: Any) -> str:
     del root
     try:
         result = _PTY_MANAGER.close(session_id=session_id, force=force)
@@ -762,7 +767,7 @@ def close_shell_session(session_id: str, force: bool = False, root: str = "") ->
     description="List active persistent PTY shell sessions.",
     input_model=ListShellSessionsInput,
 )
-def list_shell_sessions(root: str = "") -> str:
+def list_shell_sessions(root: str = "", **kwargs: Any) -> str:
     del root
     try:
         result = _PTY_MANAGER.list()
@@ -784,6 +789,7 @@ def run_nix_python(
     system_packages: list[str] | None = None,
     pure: bool = False,
     root: str = "",
+    **kwargs: Any,
 ) -> str:
     cmd = _normalize_command_text(command)
     if not cmd:

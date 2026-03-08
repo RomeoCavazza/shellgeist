@@ -9,6 +9,26 @@ from typing import Any
 from shellgeist.util_json import loads_obj
 
 
+def is_small_talk(goal: str) -> str | None:
+    """Return a direct response if the goal is just a greeting/small talk.
+
+    This heuristic bypasses the LLM loop for instant response to common greetings.
+    """
+    low = goal.strip().lower().rstrip("?.!")
+    greetings = (
+        "hey", "hi", "hello", "yo", "salut", "bonjour", "oi", "hola", "coucou",
+        "test", "ca va", "comment ca va", "comment tu vas", "how are you",
+        "tu es qui", "qui es-tu", "who are you", "c'est quoi shellgeist",
+        "aide-moi", "help", "aide", "sos"
+    )
+    # Fuzzy match: starts with greeting or is very short
+    if any(low.startswith(g) for g in greetings) or len(low) < 3:
+        # Basic check to avoid false positives on commands like "ls" or "rm"
+        if len(low) > 3 or low in greetings:
+            return "Bonjour ! Je suis ShellGeist. Comment puis-je t'aider avec ton code aujourd'hui ?"
+    return None
+
+
 @dataclass
 class NoToolDecision:
     action: str  # complete | continue
@@ -177,10 +197,11 @@ def decide_no_tool_action(
         return NoToolDecision(action="complete", final_response=extract_final_response(content))
 
     if re.search(r"<(?:tool_use|tool_request|tool_call|tool)\b", content, re.IGNORECASE):
+        truncated = str(content)[:200]
         feedback = (
             "PARSE_ERROR: Your response contained tool XML tags but the content was not valid JSON. "
             "Use EXACTLY this format: <tool_use>{\"name\": \"...\", \"arguments\": {...}}</tool_use>\n"
-            f"RAW_CONTENT: {content[:200]}"
+            f"RAW_CONTENT: {truncated}"
         )
         return NoToolDecision(action="continue", feedback=feedback)
 

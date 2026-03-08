@@ -34,6 +34,12 @@ async def _handle_agent_task(req: Any, writer: Any | None, reader: Any | None) -
     if session_id not in _agent_cache:
         from shellgeist.agent import Agent
         _agent_cache[session_id] = Agent(root=str(root))
+    else:
+        # Avoid reusing an agent pinned to a different project root
+        cached_agent = _agent_cache[session_id]
+        if str(cached_agent.root) != str(root):
+             from shellgeist.agent import Agent
+             _agent_cache[session_id] = Agent(root=str(root))
 
     agent = _agent_cache[session_id]
     res = await agent.run_task(req.goal, writer=writer, session_id=session_id, mode=req.mode, reader=reader)

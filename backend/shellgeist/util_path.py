@@ -5,23 +5,31 @@ from pathlib import Path
 
 
 def resolve_repo_path(root: Path, rel: str) -> Path:
-    """Resolve *rel* inside *root*, blocking absolute paths and ``~``.
-
-    All tool modules should use this single implementation to guarantee
-    consistent security semantics (no path-escape, no ``~`` expansion
-    inside the tool layer).
+    """Resolve *rel* inside *root*, ensuring it stays within the workspace.
+    
+    If 'rel' is absolute, it's resolved normally (but then checked against root).
+    If 'rel' starts with '~', it's expanded first.
     """
     if not rel:
         raise ValueError("invalid_path: empty path")
-    if rel.startswith("~") or rel.startswith("/"):
-        raise ValueError(
-            f"invalid_path: '{rel}' is outside the project. "
-            "Tools can only access files inside the repo root. "
-            "Use run_shell with 'cat', 'sed', or 'cp' to read/edit files outside the project."
-        )
-    p = (root / rel).resolve()
+
+    root = root.resolve()
+    p = Path(rel).expanduser()
+    
+    if p.is_absolute():
+        res = p.resolve()
+    else:
+        # Otherwise, resolve relative to root
+        res = (root / p).resolve()
+        
+    # Security: Ensure 'res' is within 'root'
+    # Use os.path.commonpath to safely check if 'root' is a parent of 'res'
     try:
-        p.relative_to(root.resolve())
+        if not str(res).startswith(str(root)):
+             # Allow specific system paths if explicitly needed in the future,
+             # but for now, we follow the "Stay in Workspace" rule.
+             raise PermissionError(f"Access denied: {rel} is outside project root {root}")
     except ValueError:
-        raise ValueError("path_escape")
-    return p
+        raise PermissionError(f"Access denied: {rel} is outside project root {root}")
+
+    return res

@@ -25,14 +25,14 @@ def _jprint(obj: Any) -> None:
 # ── agent chat ──────────────────────────────────────────────────────────
 
 
-async def _run_agent_chat(goal: str) -> int:
+async def _run_agent_chat(goal: str, mode: str = "review") -> int:
     """Connect to daemon and stream execution events to terminal."""
     if not os.path.exists(SOCKET_PATH):
         print("[!] Daemon not running. Start with: shellgeist daemon")
         return 1
 
     reader, writer = await asyncio.open_unix_connection(SOCKET_PATH)
-    payload = {"cmd": "agent_task", "goal": goal, "root": os.getcwd()}
+    payload = {"cmd": "agent_task", "goal": goal, "root": os.getcwd(), "mode": mode}
     writer.write((json.dumps(payload) + "\n").encode())
     await writer.drain()
 
@@ -93,7 +93,8 @@ async def _run_agent_chat(goal: str) -> int:
 
 def cmd_agent(args: argparse.Namespace) -> int:
     """Run a task via the agent daemon."""
-    return asyncio.run(_run_agent_chat(args.goal))
+    mode = "auto" if args.auto else "review"
+    return asyncio.run(_run_agent_chat(args.goal, mode=mode))
 
 
 def cmd_daemon(args: argparse.Namespace) -> int:
@@ -189,6 +190,8 @@ def build_parser() -> argparse.ArgumentParser:
     # agent
     sp = sub.add_parser("agent", help="Run a task via the agent")
     sp.add_argument("goal", help="Task goal")
+    sp.add_argument("--auto", action="store_true", help="Run in auto mode (bypass review)")
+    sp.add_argument("--review", action="store_true", default=True, help="Run in review mode (default)")
     sp.set_defaults(fn=cmd_agent)
 
     # daemon

@@ -40,6 +40,8 @@ def extract_canonical_response(text: str) -> str:
     content = str(text or "")
     content = _TOOL_BLOCK_RE.sub("", content)
     content = _TOOL_OBS_RE.sub("", content)
+    # Strip Plan: and Thoughts: headers and their content if they are at the start
+    content = re.sub(r"^\s*Plan:\s*.*?(?:\n\n|$)", "", content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r"^\s*Thoughts?:\s*.*?(?:\n\n|$)", "", content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r"^\s*Status:\s*DONE\s*$", "", content, flags=re.MULTILINE | re.IGNORECASE)
     content = content.strip()
@@ -47,23 +49,34 @@ def extract_canonical_response(text: str) -> str:
 
 
 def extract_actionable_thought(content: str, *, has_tool_calls: bool) -> str | None:
-    """Extract the Thought: section from LLM output.
+    """Extract the Plan: and Thought: sections from LLM output.
 
-    Always extracts, regardless of whether tool calls were found —
-    the thought should be displayed to the user in all cases.
+    The thought should be displayed to the user in all cases for transparency.
     """
-    thought_match = re.search(
-        r"Thoughts?:\s*(.*?)(?:\n\n|\n<(?:tool_use|tool_request|tool_call|tool)\b|\n[A-Z][a-zA-Z]+Input:|$)",
-        content,
-        re.DOTALL | re.IGNORECASE,
+    # Matches (Plan: ...)? (Thought: ...)
+    # or just Plan: ...
+    # or just Thought: ...
+    pattern = (
+        r"^\s*(?:"
+        r"(?:Plan:\s*(?P<plan>.*?)(?:\n\n|\nThoughts?:|$))|"
+        r"(?:Thoughts?:\s*(?P<thought>.*?)(?:\n\n|\n<(?:tool_use|tool_request|tool_call|tool)\b|\n[A-Z][a-zA-Z]+Input:|$))"
+        r")+"
     )
-    if not thought_match:
+    
+    # Simpler approach: capture everything from start until tool/divider
+    match = re.search(
+        r"^\s*((?:Plan|Thoughts?):\s*.*?)(?:\n\n\n|\n<(?:tool_use|tool_request|tool_call|tool)\b|\n[A-Z][a-zA-Z]+Input:|$)",
+        content,
+        re.DOTALL | re.IGNORECASE | re.MULTILINE,
+    )
+    if not match:
         return None
-    thought = thought_match.group(1).strip()
-    # Cut overly long thoughts (the body after thought is the response, not thinking)
+    
+    thought = match.group(1).strip()
+    # Cut overly long thoughts
     lines = thought.splitlines()
-    if len(lines) > 10:
-        thought = "\n".join(lines[:10])
+    if len(lines) > 15:
+        thought = "\n".join(lines[:15]) + "\n..."
     return thought or None
 
 

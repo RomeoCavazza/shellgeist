@@ -1,5 +1,5 @@
 """Filesystem tools: read_file, write_file, list_files, find_files, get_repo_map."""
-from __future__ import annotations
+from typing import Any
 
 import difflib
 import fnmatch
@@ -33,7 +33,7 @@ class ListFilesInput(BaseModel):
     description="Read the contents of a file.",
     input_model=ReadFileInput
 )
-def read_file(path: str | None = None, root: str = "", file_path: str | None = None, file: str | None = None) -> str:
+def read_file(path: str | None = None, root: str = "", file_path: str | None = None, file: str | None = None, **kwargs: Any) -> str:
     target = (path or file or file_path or "").strip()
     p = resolve_repo_path(Path(root), target)
     if not p.exists():
@@ -49,7 +49,7 @@ class RepoMapInput(BaseModel):
     description="Get a tree-like map of the entire repository.",
     input_model=RepoMapInput
 )
-def get_repo_map(root: str) -> str:
+def get_repo_map(root: str, **kwargs: Any) -> str:
     """
     Returns a string representation of the file tree.
     """
@@ -82,7 +82,7 @@ class WriteFileInput(BaseModel):
     description="Write content to a file. Overwrites if exists. Returns a unified diff when modifying an existing file.",
     input_model=WriteFileInput
 )
-def write_file(path: str | None = None, content: str = "", root: str = "", file_path: str | None = None, file: str | None = None) -> str:
+def write_file(path: str | None = None, content: str = "", root: str = "", file_path: str | None = None, file: str | None = None, **kwargs: Any) -> str:
     target = (path or file_path or file or "").strip()
     p = resolve_repo_path(Path(root), target)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -129,7 +129,7 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
     description="List files and directories. Set recursive=true to show the full tree. Set depth to limit recursion (default 3).",
     input_model=ListFilesInput
 )
-def list_files(directory: str = ".", root: str = "", recursive: bool = False, depth: int = 3) -> list[str]:
+def list_files(directory: str = ".", root: str = "", recursive: bool = False, depth: int = 3, max_results: int = 100, **kwargs: Any) -> list[str]:
     p = resolve_repo_path(Path(root), directory)
     if not p.exists() or not p.is_dir():
         raise FileNotFoundError(f"Directory not found: {directory}")
@@ -140,13 +140,15 @@ def list_files(directory: str = ".", root: str = "", recursive: bool = False, de
 
     if recursive:
         def _walk(dir_path: Path, current_depth: int) -> None:
-            if current_depth > depth:
+            if current_depth > depth or len(items) >= max_results:
                 return
             try:
                 entries = sorted(os.scandir(dir_path), key=lambda e: e.name)
             except PermissionError:
                 return
             for entry in entries:
+                if len(items) >= max_results:
+                    break
                 if entry.name.startswith(".") or entry.name in _IGNORED_DIRS:
                     continue
                 rel = os.path.relpath(entry.path, base)
@@ -179,7 +181,7 @@ class FindFilesInput(BaseModel):
     ),
     input_model=FindFilesInput
 )
-def find_files(pattern: str, directory: str = ".", root: str = "", max_results: int = 50) -> str | list[str]:
+def find_files(pattern: str, directory: str = ".", root: str = "", max_results: int = 50, **kwargs: Any) -> str | list[str]:
     p = resolve_repo_path(Path(root), directory)
     if not p.exists() or not p.is_dir():
         raise FileNotFoundError(f"Directory not found: {directory}")

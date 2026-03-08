@@ -16,6 +16,7 @@ from shellgeist.agent.orchestrator import (
     build_schema_error_message,
     decide_no_tool_action,
     extract_plaintext_tool_calls,
+    is_small_talk,
 )
 from shellgeist.agent.state import AgentRunState
 from shellgeist.config import debug_enabled as _debug_enabled
@@ -27,6 +28,8 @@ from shellgeist.io import (
     stopped_result,
 )
 from shellgeist.llm import build_system_prompt, get_client, run_llm_stream_with_retry
+import os
+from pathlib import Path
 from shellgeist.protocol.helpers import (
     PROTOCOL_MARKDOWN_WITHOUT_TOOL,
     extract_actionable_thought,
@@ -75,12 +78,29 @@ class Agent:
         _debug_log("Agent.__init__ done")
 
     def _setup_system_prompt(self) -> None:
+        local_rules = self._load_local_rules()
         sys_prompt = build_system_prompt(
             self.root,
             debug_log=_debug_log,
             tool_schemas_provider=registry.get_tool_schemas,
+            local_rules=local_rules,
         )
         self.history = [{"role": "system", "content": sys_prompt}]
+
+    def _load_local_rules(self) -> str | None:
+        """Load project-specific rules from .shellgeist.md or .shellgeist/rules.md."""
+        candidates = [
+            Path(self.root) / ".shellgeist.md",
+            Path(self.root) / ".shellgeist" / "rules.md",
+        ]
+        for c in candidates:
+            if c.exists() and c.is_file():
+                try:
+                    _debug_log(f"Loading local rules from {c}")
+                    return c.read_text(encoding="utf-8")
+                except Exception as e:
+                    _debug_log(f"Failed to load local rules from {c}: {e}")
+        return None
 
     # ------------------------------------------------------------------
     # Content analysis helpers (extracted from main loop)
@@ -251,6 +271,14 @@ class Agent:
 
     async def run_task(self, goal: str, writer: Any | None = None, session_id: str = "default", mode: str = "auto", reader: Any | None = None) -> dict[str, Any]:
         _debug_log(f"run_task start: {goal} (mode={mode})")
+        
+        # Check for small talk first
+        greeting = is_small_talk(goal)
+        if greeting:
+             ui = UIEventEmitter(writer, reader=reader)
+             await ui.emit_execution_event("response", greeting, phase="done", meta={"final": True})
+             return completed_result(logs=[greeting], response=greeting)
+
         initialize_history_db()
 
         ui = UIEventEmitter(writer, reader=reader)
