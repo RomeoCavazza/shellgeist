@@ -101,6 +101,61 @@ flowchart LR
 
 - Neovim plugin opens a Unix socket and sends JSON-lines (goal, mode). Backend runs the agent loop, calls tools, streams tool calls and results back. Plugin renders sidebar, tool cards, and diff review.
 
+### Request flow
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant N as Neovim
+  participant RPC as Lua RPC
+  participant D as Daemon
+  participant A as Agent
+  participant LLM as LLM API
+  participant T as Tools
+
+  U->>N: :SGAgent "fix the bug"
+  N->>RPC: goal + mode
+  RPC->>D: JSON-lines (agent_task)
+  D->>A: run_task()
+  loop Agent loop
+    A->>LLM: messages + tool schemas
+    LLM-->>A: stream (text / tool_calls)
+    alt tool_calls
+      A->>T: execute (read_file, run_shell, …)
+      T-->>A: result
+      A->>RPC: stream tool result (event)
+      RPC->>N: update sidebar
+    else text only
+      A->>RPC: stream chunk
+      RPC->>N: append to response
+    end
+  end
+  A->>D: done
+  D->>RPC: result
+  RPC->>N: close stream
+```
+
+### Agent loop (backend)
+
+```mermaid
+flowchart TB
+  subgraph loop["Agent loop"]
+    P["Build messages\n+ tool schemas"]
+    L["LLM stream"]
+    X{"Tool calls\nin output?"}
+    E["Execute tools\n(fs, shell, edit)"]
+    A["Append result\nto messages"]
+    D["Done\n(final answer)"]
+
+    P --> L
+    L --> X
+    X -->|yes| E
+    E --> A
+    A --> P
+    X -->|no| D
+  end
+```
+
 ---
 
 ## Commands

@@ -8,6 +8,7 @@ Thank you for your interest in contributing to ShellGeist! This document provide
 
 - Python 3.11+
 - Neovim 0.9+ (for plugin testing)
+- [nui.nvim](https://github.com/MunifTanjim/nui.nvim) (required by the sidebar)
 - Ollama or compatible OpenAI API endpoint
 
 ### Installation
@@ -55,72 +56,41 @@ shellgeist/
 │   ├── shellgeist/
 │   │   ├── __init__.py       # Package root, __version__
 │   │   ├── cli.py            # CLI entry point (shellgeist command)
-│   │   ├── sgd.py            # Daemon entry point (Unix socket server)
-│   │   ├── config.py         # Centralised env-var helpers
-│   │   ├── util_json.py      # Lenient JSON parser for LLM output
-│   │   ├── util_path.py      # resolve_repo_path() — safe path resolution
-│   │   ├── util_git.py       # git() subprocess helper
-│   │   ├── agent/            # Core agent loop & state
-│   │   │   ├── core.py       # Agent class, agentic loop
-│   │   │   ├── messages.py   # Message building helpers
-│   │   │   ├── orchestrator.py # Multi-step orchestration
-│   │   │   └── state.py      # Agent state management
-│   │   ├── diff/             # Diff generation & application
-│   │   │   ├── apply.py      # Unified diff application
-│   │   │   └── guards.py     # Diff safety guardrails
-│   │   ├── io/               # I/O primitives
-│   │   │   ├── events.py     # UI event emitter (streaming + review)
-│   │   │   ├── results.py    # Result formatting
-│   │   │   ├── telemetry.py  # Telemetry utilities
-│   │   │   └── transport.py  # Socket send_json / safe_drain
-│   │   ├── llm/              # LLM client layer
+│   │   ├── config.py         # Env-var config (OPENAI_*, SHELLGEIST_*)
+│   │   ├── agent/            # Agent loop & orchestration
+│   │   │   ├── loop.py       # Agent class, tool-call loop, small-talk
+│   │   │   ├── messages.py   # Message building
+│   │   │   ├── signals.py    # UI signals
+│   │   │   └── parsing/      # XML/plaintext tool parsing, json_utils, normalize
+│   │   ├── llm/              # LLM client
 │   │   │   ├── client.py     # OpenAI-compatible client
-│   │   │   ├── prompt.py     # System prompt construction
-│   │   │   └── stream.py     # Streaming response handler
-│   │   ├── protocol/         # JSON-lines RPC protocol
-│   │   │   ├── handler.py    # Command dispatcher
-│   │   │   ├── helpers.py    # Protocol utilities
-│   │   │   └── models.py     # Request/response models (Pydantic)
-│   │   ├── safety/           # Safety & guardrails
-│   │   │   ├── blocked.py    # Blocked command patterns
-│   │   │   ├── loop_guard.py # Infinite loop detection
-│   │   │   ├── retry.py      # Exponential-backoff retry engine
-│   │   │   └── verify.py     # Output verification
-│   │   ├── session/          # Session & history
-│   │   │   ├── ops.py        # Session operations
-│   │   │   ├── repair.py     # Session repair utilities
-│   │   │   └── store.py      # SQLite history store
-│   │   └── tools/            # Tool implementations
-│   │       ├── __init__.py   # load_tools() — explicit registration
-│   │       ├── base.py       # Tool, ToolRegistry, global registry
-│   │       ├── coder.py      # Code editing tool (diff/fulltext pipeline)
-│   │       ├── executor.py   # Tool executor + review flow
-│   │       ├── fs.py         # Filesystem tools (read/write/list/find)
-│   │       ├── normalize.py  # LLM output normalisation
-│   │       ├── parser.py     # XML tool-call parser
-│   │       ├── policy.py     # Per-project tool policy
-│   │       ├── preview.py    # Code preview for tool calls
-│   │       ├── runtime.py    # Arg normalisation + missing-arg detection
-│   │       └── shell.py      # Shell command + PTY sessions
-│   └── tests/                # Test suite (84 tests)
-│       ├── test_diff_apply.py
-│       ├── test_guards.py
-│       ├── test_normalize.py
-│       ├── test_tool_parser.py
-│       └── test_util_json.py
+│   │   │   ├── prompt.py     # System prompt, tool schemas, .shellgeist.md
+│   │   │   └── stream.py     # Streaming + retry
+│   │   ├── runtime/          # Daemon, protocol, session, policy
+│   │   │   ├── server.py     # Unix socket server, request routing
+│   │   │   ├── protocol.py   # Pydantic SGRequest/SGResult, JSON-lines
+│   │   │   ├── session/      # SQLite history, ops, repair
+│   │   │   ├── policy.py     # LoopGuard, RetryEngine
+│   │   │   └── paths.py      # resolve_repo_path
+│   │   └── tools/            # Tool registry, executor, implementations
+│   │       ├── fs.py         # read_file, write_file, list_files, find_files
+│   │       ├── edit.py       # edit_file, edit_plan, apply
+│   │       ├── patch/        # Unified diff + guards
+│   │       └── shell.py       # run_shell, PTY, run_nix_python
+│   └── tests/                # Test suite (see docs/AUDIT.md for coverage)
+│       └── test_paths_and_fs.py
 ├── nvim/                     # Neovim plugin (Lua)
 │   ├── plugin/shellgeist.lua # Plugin loader
 │   └── lua/shellgeist/
-│       ├── init.lua          # Plugin setup, commands, event dispatch
+│       ├── init.lua          # Setup, commands (SGAgent, SGChat, SGSidebar, etc.)
 │       ├── sidebar.lua       # Chat sidebar UI (nui.nvim)
 │       ├── rpc.lua           # Unix socket RPC client
 │       ├── diff.lua          # Diff preview & apply
 │       └── conflict.lua      # Inline accept/reject conflict view
-├── docs/                     # Technical documentation
-│   ├── ARCHITECTURE.md       # Full architecture & RPC protocol
-│   ├── AUDIT.md              # Code audit findings
-│   └── ROADMAP.md            # Refactoring roadmap
-├── flake.nix                 # Nix flake (develop / run / build)
+├── docs/
+│   ├── AUDIT.md              # Technical and conceptual audit
+│   └── VERSION_ANALYSIS.md   # Version history analysis
+├── flake.nix                 # Nix flake (develop / run)
 ├── pyproject.toml            # Python packaging
 └── shellgeist                # Wrapper script (bash)
 ```
