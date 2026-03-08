@@ -21,7 +21,9 @@ def resolve_repo_path(root: Path, rel: str) -> Path:
         res = p.resolve()
         if not res.is_relative_to(root):
             # Auto-correct: treat basename as relative to root
-            corrected = (root / p.name).resolve()
+            # Preserve full directory structure: /tasks/foo.py → root/tasks/foo.py
+            rel = str(p).lstrip("/")
+            corrected = (root / rel).resolve()
             if corrected.is_relative_to(root):
                 return corrected
             raise PermissionError(

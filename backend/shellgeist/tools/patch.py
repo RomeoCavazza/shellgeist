@@ -87,7 +87,8 @@ def autofix_future_import(old: str, new: str) -> str:
 def enforce_guards(*, relpath: str, instruction: str, old: str, new: str) -> Tuple[bool, str]:
     """Block dangerous or overly violent rewrites."""
     if old == new: return True, ""
-    
+    if not old.strip(): return True, ""  # New file — no violence check
+
     ratio = difflib.SequenceMatcher(None, old.splitlines(), new.splitlines()).ratio()
     if ratio < 0.2 and "rewrite" not in instruction.lower():
         return False, f"rewrite too violent ({ratio:.2f})"
