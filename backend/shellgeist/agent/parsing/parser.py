@@ -10,14 +10,19 @@ from typing import Any
 
 from shellgeist.agent.parsing.json_utils import loads_obj
 
-# Opening: <tool_use>, <tool_request>, <tool_call>, <tool>
+# Opening: <tool_use>, <tool_request>, <tool_call>, <tool call>, <tool_invocation>, <tool>
 # Optionally with attributes (e.g. name="run_shell")
-_TAG_OPEN = r"<(tool_use|tool_request|tool_call|tool)\b([^>]*)>"
-# Closing: any </tool...> variant
-_TAG_CLOSE = r"</(tool_use|tool_request|tool_call|tool[_a-z]*)>"
+_TAG_OPEN = r"<(tool_use|tool_request|tool_call|tool\s+call|tool_invocation|tool)\b([^>]*)>"
+# Closing: any </tool...> variant, including </tool call>, </tool_invocation>
+_TAG_CLOSE = r"</(tool_use|tool_request|tool_call|tool\s+call|tool_invocation|tool[_a-z]*)>"
 # Full pattern: open tag → body → close tag
 _TOOL_RE = re.compile(
     _TAG_OPEN + r"(.*?)" + _TAG_CLOSE,
+    re.DOTALL | re.IGNORECASE,
+)
+# Same but body can end at markdown fence (model puts <tool_use> inside ```python and omits </tool_use>)
+_TOOL_RE_UNTIL_FENCE = re.compile(
+    _TAG_OPEN + r"(.*?)(?=" + _TAG_CLOSE + r"|\n```)",
     re.DOTALL | re.IGNORECASE,
 )
 # Markdown code block: ```tool_use\n{...}\n``` (model sometimes outputs this instead of XML)
@@ -27,6 +32,30 @@ _MD_TOOL_RE = re.compile(
 )
 # Extract name="..." from tag attributes
 _ATTR_NAME_RE = re.compile(r'name\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+# XML-like body: <name>tool_name</name> and/or <arguments>...</arguments> or <parameters>...</parameters>
+_XML_NAME_RE = re.compile(r"<name>\s*([^<]+?)\s*</name>", re.IGNORECASE | re.DOTALL)
+_XML_ARGS_OPEN = re.compile(r"<arguments?\s*>", re.IGNORECASE)
+# Match <arguments>...</arguments> OR <parameters>...</parameters> with nested tags allowed in content
+_XML_ARGS_BLOCK_RE = re.compile(
+    r"<arguments?\s*>(.*?)</arguments?>",
+    re.IGNORECASE | re.DOTALL,
+)
+_XML_PARAMS_BLOCK_RE = re.compile(
+    r"<parameters?\s*>(.*?)</parameters?>",
+    re.IGNORECASE | re.DOTALL,
+)
+# Inner XML key/value: <key>value</key>
+_XML_KV_RE = re.compile(
+    r"<([A-Za-z_][A-Za-z0-9_]*)>\s*([^<]*?)\s*</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+# Salvage write_file when content uses Python + concatenation (invalid JSON)
+_WRITE_FILE_PATH_RE = re.compile(r'"path"\s*:\s*"([^"]*)"', re.IGNORECASE)
+_WRITE_FILE_CONTENT_RE = re.compile(
+    r'"content"\s*:\s*((?:"(?:[^"\\]|\\.)*"\s*(?:\+\s*)?)+)',
+    re.IGNORECASE | re.DOTALL,
+)
+_ONE_QUOTED_STR = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 
 def _wrap_bare_json(text: str) -> str:
@@ -40,12 +69,74 @@ def _wrap_bare_json(text: str) -> str:
     return s
 
 
+def _parse_xml_like_body(body: str, attr_name: str | None = None) -> dict[str, Any] | None:
+    """Parse XML-style tool_use body: <name>X</name><arguments>...</arguments> or <parameters>...</parameters>.
+
+    Many models output this instead of JSON. We accept it so we don't
+    trigger PROTOCOL_VIOLATION and can still run the tool.
+    """
+    body = (body or "").strip()
+    if not body:
+        return None
+    name_match = _XML_NAME_RE.search(body)
+    name = (name_match.group(1).strip() if name_match else None) or attr_name
+    args_block = _XML_ARGS_BLOCK_RE.search(body) or _XML_PARAMS_BLOCK_RE.search(body)
+    arguments: dict[str, Any] = {}
+    if args_block:
+        inner = args_block.group(1).strip()
+        if inner.startswith("{"):
+            try:
+                arguments = loads_obj(inner)
+                if not isinstance(arguments, dict):
+                    arguments = {}
+            except Exception:
+                pass
+        if not arguments and inner:
+            # Parse <key>value</key> pairs
+            for m in _XML_KV_RE.finditer(inner):
+                key, val = m.group(1), m.group(2).strip()
+                arguments[key] = val
+    if not name:
+        return None
+    return {"name": name, "arguments": arguments}
+
+
+def _salvage_write_file(body: str) -> dict[str, Any] | None:
+    """When write_file body is invalid JSON (e.g. content uses Python + concat), extract path and content."""
+    if not body or "write_file" not in body.lower():
+        return None
+    path_m = _WRITE_FILE_PATH_RE.search(body)
+    path = path_m.group(1) if path_m else ""
+    if not path:
+        return None
+    content_m = _WRITE_FILE_CONTENT_RE.search(body)
+    if not content_m:
+        return {"name": "write_file", "arguments": {"path": path, "content": ""}}
+    inner = content_m.group(1)
+    parts: list[str] = []
+    for m in _ONE_QUOTED_STR.finditer(inner):
+        raw = m.group(1)
+        raw = raw.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"').replace("\\\\", "\\")
+        parts.append(raw)
+    content = "".join(parts)
+    return {"name": "write_file", "arguments": {"path": path, "content": content}}
+
+
 def parse_xml_tool_use(
     text: str,
     *,
     debug_log: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
+    # Strip markdown code fences so <tool_use> inside ```json ... ``` is still found
+    cleaned = re.sub(r"^```\s*(?:json)?\s*\n?", "", text)
+    cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+    if cleaned != text:
+        text = cleaned
+
     matches: list[Any] = list(_TOOL_RE.finditer(text))
+    matches_fence: list[Any] = list(_TOOL_RE_UNTIL_FENCE.finditer(text))
+    if len(matches_fence) > len(matches):
+        matches = matches_fence
 
     # Fallback 1: markdown code blocks ```tool_use\n{...}```
     if not matches:
@@ -67,7 +158,7 @@ def parse_xml_tool_use(
 
     # Fallback 2: split on any opening tool tag if regex didn't match
     if not matches:
-        for variant in ("tool_use", "tool_request", "tool_call", "tool"):
+        for variant in ("tool_use", "tool_request", "tool_call", "tool_invocation", "tool"):
             tag = f"<{variant}"
             if tag in text.lower():
                 idx = text.lower().find(tag)
@@ -101,9 +192,14 @@ def parse_xml_tool_use(
             wrapped = _wrap_bare_json(body)
             obj = loads_obj(wrapped)
         except Exception as exc:
-            if debug_log:
-                debug_log(f"Tool parse FAIL ({tag_name}): {exc!r} | body={body!r}")
-            continue
+            # Many models output XML-style <name>X</name><arguments>...</arguments>
+            obj = _parse_xml_like_body(body, attr_name=attr_name)
+            if obj is None and (attr_name == "write_file" or "write_file" in body):
+                obj = _salvage_write_file(body)
+            if obj is None:
+                if debug_log:
+                    debug_log(f"Tool parse FAIL ({tag_name}): {exc!r} | body={body!r}")
+                continue
 
         # If tag had name= attribute and the parsed dict has no "name" key,
         # inject the tool name + treat the rest as arguments

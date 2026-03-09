@@ -24,7 +24,7 @@ from shellgeist.agent.parsing.normalize import (
 )
 from shellgeist.tools.git_utils import git
 from shellgeist.agent.parsing.json_utils import loads_obj
-from shellgeist.runtime.paths import resolve_repo_path
+from shellgeist.runtime.paths import resolve_repo_path, read_repo_file
 
 
 class EditFileInput(BaseModel):
@@ -220,18 +220,19 @@ class _ModelCtx:
     model: str
 
 
-def _get_ctx(model_type: str, cache: dict[str, _ModelCtx]) -> _ModelCtx:
-    ctx = cache.get(model_type)
+def _get_ctx(cache: dict[str, _ModelCtx]) -> _ModelCtx:
+    key = "_"
+    ctx = cache.get(key)
     if ctx is not None:
         return ctx
-    client, model = get_client(model_type)
+    client, model = get_client()
     ctx = _ModelCtx(client=client, model=model)
-    cache[model_type] = ctx
+    cache[key] = ctx
     return ctx
 
 
-def _call_model(*, model_type: str, system: str, user: str, cache: dict[str, _ModelCtx]) -> tuple[str, str]:
-    ctx = _get_ctx(model_type, cache)
+def _call_model(*, system: str, user: str, cache: dict[str, _ModelCtx]) -> tuple[str, str]:
+    ctx = _get_ctx(cache)
     r = ctx.client.chat.completions.create(
         model=ctx.model,
         messages=[
@@ -413,7 +414,7 @@ def _fulltext_fallback(
 ) -> EditResult:
     """Last-resort strategy: ask LLM for complete file content instead of a diff."""
     system, user = _build_fulltext_prompts(path, instruction, old, repair=reason)
-    raw, _ = _call_model(model_type="smart", system=system, user=user, cache=cache)
+    raw, _ = _call_model(system=system, user=user, cache=cache)
 
     new: str | None = None
     try:
@@ -544,7 +545,7 @@ def _try_diff_attempt(
 
     repair_hint = _repair_hint_for_detail(detail)
     sys_r, usr_r = _build_prompts(path, instruction, old, repair=repair_hint)
-    raw_r, _ = _call_model(model_type="smart", system=sys_r, user=usr_r, cache=cache)
+    raw_r, _ = _call_model(system=sys_r, user=usr_r, cache=cache)
     diff_r = _parse_diff_from_raw(raw_r, tag=f"guard-repair-{tag}")
 
     if "@@" in diff_r:
@@ -582,13 +583,13 @@ def edit_plan(path: str, instruction: str, *, root: Path, review_mode: bool = Fa
     if not file_path.exists():
         old = ""
     else:
-        old = file_path.read_text(encoding="utf-8", errors="replace")
+        old = read_repo_file(file_path)
 
     cache: dict[str, _ModelCtx] = {}
 
     # --- Attempt 1: ask LLM for a diff ----------------------------------
     sys1, usr1 = _build_prompts(path, instruction, old)
-    raw1, _ = _call_model(model_type="smart", system=sys1, user=usr1, cache=cache)
+    raw1, _ = _call_model(system=sys1, user=usr1, cache=cache)
     diff1 = _parse_diff_from_raw(raw1, tag="1")
 
     if "@@" not in diff1:
@@ -604,7 +605,7 @@ def edit_plan(path: str, instruction: str, *, root: Path, review_mode: bool = Fa
 
     # --- Attempt 2: retry with error feedback ----------------------------
     sys2, usr2 = _build_prompts(path, instruction, old, repair="patch_apply_failed: see attempt 1")
-    raw2, _ = _call_model(model_type="smart", system=sys2, user=usr2, cache=cache)
+    raw2, _ = _call_model(system=sys2, user=usr2, cache=cache)
     diff2 = _parse_diff_from_raw(raw2, tag="2")
 
     if "@@" in diff2:
@@ -643,7 +644,7 @@ def apply_full_replace(
     if not isinstance(new, str):
         return {"ok": False, "error": "invalid_content"}
 
-    old = file_path.read_text(encoding="utf-8", errors="replace")
+    old = read_repo_file(file_path)
     new = maybe_unescape_llm_string(new)
 
     patch = _make_patch_from_fulltext(path, old, new)
@@ -694,7 +695,7 @@ def apply_edit(
     if not isinstance(patch, str) or "@@" not in patch:
         return {"ok": False, "error": "invalid_patch"}
 
-    old = file_path.read_text(encoding="utf-8", errors="replace")
+    old = read_repo_file(file_path)
     patch = _normalize_unified_diff(maybe_unescape_llm_string(patch))
 
     if old == "":
@@ -759,6 +760,6 @@ def write_reviewed_content(path: str, content: str, *, root: str | Path) -> None
     Performs an atomic write without re-running guards (they already ran
     before the review was sent to the user).
     """
-    file_path = resolve_repo_path(Path(root) if isinstance(root, str) else root, path)
+    file_path = resolve_repo_path(root, path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(file_path, content)

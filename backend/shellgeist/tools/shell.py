@@ -611,17 +611,32 @@ def run_shell(command: str, root: str, **kwargs: Any) -> str:
     """
     Execute a shell command and return its output.
     """
-    # Guard: refuse to run in home directory (likely misconfigured root)
-    home = str(Path.home().resolve())
-    if str(Path(root).resolve()) == home:
-        return (
-            "Error: WORKSPACE ROOT is your HOME directory. "
-            "Open Neovim inside a project folder first."
-        )
-
     cmd = (command or "").strip()
     if not cmd:
         return "Error: empty command"
+
+    # Rewrite ./script.py to python3 script.py to avoid Permission denied and bash interpreting Python
+    first_part = cmd.split("#")[0].strip().split()
+    if first_part and first_part[0].startswith("./") and first_part[0].endswith(".py"):
+        rel = first_part[0][2:]
+        script_path = Path(root) / rel
+        if script_path.is_file():
+            rest = " ".join(first_part[1:]) if len(first_part) > 1 else ""
+            cmd = f"python3 {rel}" + (" " + rest if rest else "")
+
+    # Reject commands that are clearly interactive (no script, no -c); they would block or exit immediately.
+    cmd_lower = cmd.split("#")[0].strip().lower()
+    bare_interactive = (
+        cmd_lower in ("python3", "python", "python2", "bash", "sh", "zsh", "fish")
+        or cmd_lower in ("/usr/bin/env python3", "/usr/bin/env python", "/bin/bash")
+        or re.match(r"^\s*(/usr/bin/env\s+)?(python3?|bash|sh|zsh|fish)\s*$", cmd_lower)
+    )
+    if bare_interactive:
+        return (
+            "Error: run_shell is for one-shot commands only. "
+            "Do not run a bare interpreter (python3, bash, etc.). "
+            "Use e.g. python3 myfile.py or python3 -c '...' or bash -c '...'."
+        )
 
     # This tool executes each command in a fresh shell process.
     # A bare nix-shell opens a subshell that cannot persist across tool calls.
@@ -637,10 +652,12 @@ def run_shell(command: str, root: str, **kwargs: Any) -> str:
     try:
         env = _build_shell_env(root)
 
+        # Prevent interactive processes from blocking: never give them stdin.
         p = subprocess.run(
             ["bash", "-lc", cmd],
             cwd=root,
             env=env,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -795,7 +812,8 @@ def list_shell_sessions(root: str = "", **kwargs: Any) -> str:
 @registry.register(
     description=(
         "Run a one-shot Python command inside a Nix environment with optional Python and system packages. "
-        "Use this instead of crafting nix-shell syntax manually."
+        "The 'command' argument must be a FULL shell command, e.g. 'python3 cube.py' or 'python3 -c \"print(1)\"'. "
+        "Do NOT pass only arguments like '-c \"...\"' — the shell would try to run a binary named -c and fail."
     ),
     input_model=RunNixPythonInput,
 )
@@ -812,6 +830,13 @@ def run_nix_python(
         return "Error: empty command"
     if is_blocked(cmd):
         return "Blocked: unsafe command pattern detected."
+
+    # command must be a full command (e.g. python3 script.py), not just arguments
+    if cmd.strip().startswith("-c ") or re.match(r"^\s*-\w+\s", cmd):
+        return (
+            "Error: run_nix_python 'command' must be a full command, e.g. 'python3 cube.py' or 'python3 -c \"print(1)\"'. "
+            "You passed something like '-c ...' which the shell tries to run as a binary. Use 'python3 -c \"...\"' instead."
+        )
 
     py_pkgs = list(python_packages or [])
     sys_pkgs = list(system_packages or [])

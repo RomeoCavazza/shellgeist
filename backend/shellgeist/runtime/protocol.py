@@ -31,12 +31,6 @@ class GitRestoreRequest(SGBaseRequest):
     file: str
 
 
-class PlanRequest(SGBaseRequest):
-    cmd: Literal["plan"]
-    root: str | None = None
-    goal: str
-
-
 class EditRequest(SGBaseRequest):
     cmd: Literal["edit"]
     root: str | None = None
@@ -78,17 +72,6 @@ class ResetSessionRequest(SGBaseRequest):
     session_id: str = "default"
 
 
-class ShellRequest(SGBaseRequest):
-    cmd: Literal["shell"]
-    root: str | None = None
-    task: str
-
-
-class ChatRequest(SGBaseRequest):
-    cmd: Literal["chat"]
-    text: str
-
-
 class HistoryRequest(SGBaseRequest):
     cmd: Literal["get_history"]
     session_id: str = "default"
@@ -99,14 +82,11 @@ SGRequest = (
     | GitStatusRequest
     | GitAddRequest
     | GitRestoreRequest
-    | PlanRequest
     | EditRequest
     | EditApplyRequest
     | EditApplyFullRequest
     | AgentTaskRequest
     | ResetSessionRequest
-    | ShellRequest
-    | ChatRequest
     | HistoryRequest
 )
 

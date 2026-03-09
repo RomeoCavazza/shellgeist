@@ -6,12 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from shellgeist.agent.messages import Message
-from shellgeist.runtime.protocol import SGResult
-from shellgeist.agent.signals import UIEvent
 from shellgeist.agent.orchestrator import (
-    ToolCallQueue,
-    build_schema_error_message,
     decide_no_tool_action,
     extract_plaintext_tool_calls,
     is_small_talk,
@@ -28,6 +23,7 @@ from shellgeist.runtime.session import (
 )
 from shellgeist.runtime.telemetry import TelemetryEmitter
 from shellgeist.runtime.transport import UIEventEmitter
+from shellgeist.runtime.paths import resolve_repo_path, read_repo_file
 from shellgeist.tools import load_tools, registry
 from shellgeist.tools.executor import execute_tool_call
 from shellgeist.agent.parsing.parser import parse_xml_tool_use
@@ -50,29 +46,19 @@ class Agent:
     def __init__(self, root: str) -> None:
         load_tools()
         self.root = root
-        self.client, self.model = get_client("smart")
+        self.client, self.model = get_client()
         self.history: list[dict[str, Any]] = []
         self._setup_system_prompt()
 
     def _setup_system_prompt(self) -> None:
-        local_rules = self._load_local_rules()
+        # Rules are included via get_project_context (single source)
         sys_prompt = build_system_prompt(
             self.root,
             debug_log=_debug_log,
             tool_schemas_provider=registry.get_tool_schemas,
-            local_rules=local_rules,
+            local_rules=None,
         )
         self.history = [{"role": "system", "content": sys_prompt}]
-
-    def _load_local_rules(self) -> str | None:
-        candidates = [
-            Path(self.root) / ".shellgeist.md",
-            Path(self.root) / ".shellgeist" / "rules.md",
-        ]
-        for c in candidates:
-            if c.exists() and c.is_file():
-                return c.read_text(encoding="utf-8")
-        return None
 
     async def run_task(self, goal: str, writer: Any | None = None, session_id: str = "default", mode: str = "auto", reader: Any | None = None, fresh_conversation: bool = False) -> dict[str, Any]:
         greeting = is_small_talk(goal)
@@ -117,42 +103,158 @@ class Agent:
             
             await ui.status(True)
 
-            # Stream response tokens to UI in real-time
-            async def _on_response_chunk(delta: str) -> None:
-                await ui.emit_execution_event(
-                    "response", delta, phase="streaming",
-                    meta={"chunk": True},
-                )
-
-            content, stream_report = await run_llm_stream_with_retry(
-                client=self.client,
-                model=self.model,
-                messages=self.history,
-                retry_engine=retry_engine,
-                telemetry=telemetry,
-                log_retry=_log_retry,
-                on_chunk=_on_response_chunk,
+            # Message we're responding to: prefer goal on first iteration so bypass is reliable
+            last_user_content = ""
+            for m in reversed(self.history):
+                if m.get("role") == "user":
+                    raw = m.get("content")
+                    last_user_content = (
+                        (raw if isinstance(raw, str) else (str(raw) if raw else ""))
+                    ).strip().lower()
+                    break
+            _respond_to = (goal or "").strip().lower() if (i == 0 and goal) else last_user_content
+            _is_list_only_request = (
+                len(_respond_to) < 200
+                and any(x in _respond_to for x in (
+                    "list files", "liste le contenu", "liste les fichiers", " ls ",
+                    "contenu du répertoire", "contenu du dossier", "répertoire courant",
+                ))
+                and not any(x in _respond_to for x in (" and ", " then ", " puis ", "show ", "read ", "cat ", "affiche ", "create", "crée", "write", "run ", "exécute"))
             )
-            await ui.status(False)
+            # Only inject when we haven't responded yet (last message is user), to avoid re-injecting every iteration
+            _should_inject_list = _is_list_only_request and (self.history and self.history[-1].get("role") == "user")
 
-            if stream_report.outcome != "success":
-                return {"ok": False, "error": "provider_error", "logs": logs}
-
-            content_str = str(content or "")
-            if content_str:
-                # Truncate huge assistant replies in history to avoid model "continuing" them next turn
-                to_append = content_str
-                if len(to_append) > _MAX_HISTORY_ASSISTANT_CHARS:
-                    to_append = (
-                        to_append[:_MAX_HISTORY_ASSISTANT_CHARS].rstrip()
-                        + f"\n\n... [truncated, {len(content_str)} chars]"
-                    )
-                self.history.append({"role": "assistant", "content": to_append})
+            if _should_inject_list:
+                # If user asked for a specific directory (e.g. "dossier backend", "list backend/"), use it
+                _list_dir = "."
+                for subdir in ("backend", "src", "docs", "nvim"):
+                    if subdir in _respond_to:
+                        _list_dir = subdir
+                        break
+                content_str = f'<tool_use>{{"name": "list_files", "arguments": {{"directory": "{_list_dir}"}}}}</tool_use>'
+                await ui.emit_execution_event("response", content_str, phase="streaming", meta={"chunk": True})
+                if content_str:
+                    to_append = content_str
+                    if len(to_append) > _MAX_HISTORY_ASSISTANT_CHARS:
+                        to_append = to_append[:_MAX_HISTORY_ASSISTANT_CHARS].rstrip() + "\n\n... [truncated]"
+                    self.history.append({"role": "assistant", "content": to_append})
                 logs.append(content_str)
+                await ui.status(False)
+            else:
+                # Stream response tokens to UI in real-time
+                async def _on_response_chunk(delta: str) -> None:
+                    await ui.emit_execution_event(
+                        "response", delta, phase="streaming",
+                        meta={"chunk": True},
+                    )
+
+                content, stream_report = await run_llm_stream_with_retry(
+                    client=self.client,
+                    model=self.model,
+                    messages=self.history,
+                    retry_engine=retry_engine,
+                    telemetry=telemetry,
+                    log_retry=_log_retry,
+                    on_chunk=_on_response_chunk,
+                )
+                await ui.status(False)
+
+                if stream_report.outcome != "success":
+                    return {"ok": False, "error": "provider_error", "logs": logs}
+
+                content_str = str(content or "")
+                if content_str:
+                    # Truncate huge assistant replies in history to avoid model "continuing" them next turn
+                    to_append = content_str
+                    if len(to_append) > _MAX_HISTORY_ASSISTANT_CHARS:
+                        to_append = (
+                            to_append[:_MAX_HISTORY_ASSISTANT_CHARS].rstrip()
+                            + f"\n\n... [truncated, {len(content_str)} chars]"
+                        )
+                    self.history.append({"role": "assistant", "content": to_append})
+                    logs.append(content_str)
 
             tool_calls = parse_xml_tool_use(content_str)
             if not tool_calls:
                 tool_calls = extract_plaintext_tool_calls(content_str)
+
+            # LIST FILES: if user just asked to list (previous message) and model did anything else, force list_files
+            if tool_calls and len(self.history) >= 2 and self.history[-2].get("role") == "user":
+                prev = (self.history[-2].get("content") or "").strip().lower()
+                _prev_list = (
+                    len(prev) < 200
+                    and any(x in prev for x in ("list files", "liste le contenu", "liste les fichiers", " ls ", "contenu du répertoire", "contenu du dossier", "répertoire courant"))
+                    and not any(x in prev for x in (" and ", " then ", " puis ", "show ", "read ", "cat ", "affiche ", "create", "crée", "write", "run ", "exécute"))
+                )
+                _list_dir_prev = "."
+                for subdir in ("backend", "src", "docs", "nvim"):
+                    if subdir in prev:
+                        _list_dir_prev = subdir
+                        break
+                if _prev_list:
+                    tool_calls = [{"name": "list_files", "arguments": {"directory": _list_dir_prev}}]
+                elif tool_calls and len(tool_calls) == 1 and tool_calls[0].get("name") == "find_files" and any(x in prev for x in ("list", "liste", "ls", "répertoire", "dossier", "contenu")):
+                    tool_calls = [{"name": "list_files", "arguments": {"directory": _list_dir_prev}}]
+            elif tool_calls:
+                last_user = ""
+                for i in range(len(self.history) - 1, -1, -1):
+                    m = self.history[i]
+                    if m and m.get("role") == "user":
+                        c = (m.get("content") or "").strip()
+                        if c and "PROTOCOL_VIOLATION" not in c and "Only the first" not in c and "Output must be" not in c and "PARSE_ERROR" not in c:
+                            last_user = c
+                            break
+                if not last_user and len(self.history) >= 2 and self.history[-2].get("role") == "user":
+                    last_user = (self.history[-2].get("content") or "").strip()
+                last_lower = (last_user or "").lower().strip()
+                list_only = (
+                    len(last_lower) < 200
+                    and any(
+                        x in last_lower
+                        for x in (
+                            "list files",
+                            "liste le contenu",
+                            "liste les fichiers",
+                            " list ",
+                            " ls ",
+                            "ls\n",
+                            "contenu du répertoire",
+                            "contenu du dossier",
+                            "répertoire courant",
+                        )
+                    )
+                    and not any(
+                        x in last_lower
+                        for x in (
+                            " and ",
+                            " then ",
+                            " puis ",
+                            "show ",
+                            "read ",
+                            "cat ",
+                            "affiche ",
+                            "create",
+                            "crée",
+                            "write",
+                            "run ",
+                            "exécute",
+                        )
+                    )
+                )
+                short_list_like = (
+                    len(last_lower) < 120
+                    and any(x in last_lower for x in ("list", "liste", "ls", "répertoire", "dossier", "contenu"))
+                    and " and " not in last_lower
+                    and " then " not in last_lower
+                    and " puis " not in last_lower
+                )
+                _list_dir_fallback = "."
+                for subdir in ("backend", "src", "docs", "nvim"):
+                    if subdir in last_lower:
+                        _list_dir_fallback = subdir
+                        break
+                if list_only or short_list_like:
+                    tool_calls = [{"name": "list_files", "arguments": {"directory": _list_dir_fallback}}]
 
             # Enforce max 3 tool calls per turn to avoid LLM dumping 10+ calls and repeated failures
             max_tools_per_turn = 3
@@ -185,14 +287,14 @@ class Agent:
                 func_name = tc.get("name")
                 args = tc.get("arguments", {})
 
-                # Emit rich status for each tool call
+                # Emit rich status for each tool call (text labels, no emoji)
                 _STATUS_ICONS = {
-                    "read_file": "🔍", "list_files": "📂", "find_files": "🔎",
-                    "write_file": "✏️", "edit_file": "✏️",
-                    "run_shell": "🐚", "start_shell_session": "🐚",
-                    "exec_shell_session": "🐚", "get_repo_map": "🗺️",
+                    "read_file": "[read]", "list_files": "[list]", "find_files": "[find]",
+                    "write_file": "[write]", "edit_file": "[edit]",
+                    "run_shell": "[shell]", "start_shell_session": "[shell]",
+                    "exec_shell_session": "[shell]", "get_repo_map": "[map]",
                 }
-                icon = _STATUS_ICONS.get(func_name, "⚙️")
+                icon = _STATUS_ICONS.get(func_name, "[tool]")
                 status_label = f"{icon} {func_name}"
                 if func_name in ("read_file", "write_file", "edit_file") and args.get("path"):
                     status_label += f" {args['path']}"
@@ -206,11 +308,42 @@ class Agent:
                 # Emit the tool call to the sidebar so the user can see what's happening
                 await ui.emit_execution_event("tool_call", func_name or "", phase="tool_use", meta={"tool": func_name, "args": args})
 
-                # Manual approval logic...
-                if review_mode:
+                # Manual approval logic (or for write_file in review mode: diff review below)
+                if review_mode and func_name != "write_file":
                     approved = await ui.request_approval(func_name, args)
                     if not approved:
                         continue
+
+                # Block read_file without path: inject clear observation and skip backend call
+                if func_name == "read_file":
+                    path_val = (args.get("path") or args.get("file") or args.get("file_path") or "").strip()
+                    if not path_val:
+                        obs = 'Error: read_file requires argument "path". Example: {"path": "README.md"}.'
+                        await ui.emit_execution_event("tool_result", obs, phase="tool_use", meta={"tool": func_name, "success": False})
+                        self.history.append({"role": "user", "content": f'<tool_observation name="{func_name}">\n{obs}\n</tool_observation>'})
+                        save_db_message(session_id, "user", self.history[-1]["content"], log_type="context")
+                        continue
+
+                # In review mode, write_file goes through diff review
+                if review_mode and func_name == "write_file":
+                    path = (args.get("path") or args.get("file") or "").strip()
+                    new_content = args.get("content", "")
+                    old_content = ""
+                    if path:
+                        try:
+                            p = resolve_repo_path(Path(self.root), path)
+                            if p.exists():
+                                old_content = read_repo_file(p)
+                        except Exception:
+                            pass
+                    decision = await ui.request_review(path or "?", old_content, new_content, root=self.root)
+                    if decision is None:
+                        obs = f"User rejected the write to {path}."
+                        await ui.emit_execution_event("tool_result", obs, phase="tool_use", meta={"tool": func_name, "success": False})
+                        self.history.append({"role": "user", "content": f'<tool_observation name="{func_name}">\n{obs}\n</tool_observation>'})
+                        save_db_message(session_id, "user", self.history[-1]["content"], log_type="context")
+                        continue
+                    args = {**args, "content": decision}
 
                 outcome = await execute_tool_call(
                     func_name=func_name,
@@ -237,7 +370,7 @@ class Agent:
                 if len(obs) > _MAX_HISTORY_OBS_CHARS:
                     obs = (
                         obs[:_MAX_HISTORY_OBS_CHARS].rstrip()
-                        + f"\n\n... [truncated, {len(outcome.observation)} chars total]. Use the result above; do not repeat or paste it in your reply."
+                        + f"\n\n... [truncated, {len(outcome.observation)} chars total]."
                     )
                 obs = f"<tool_observation name=\"{func_name}\">\n{obs}\n</tool_observation>"
                 self.history.append({"role": "user", "content": obs})
@@ -252,11 +385,27 @@ class Agent:
             # If the model sent Status: DONE/FAILED in the same message as <tool_use>, remind it not to
             if re.search(r"Status:\s*(?:DONE|FAILED)", content_str, re.IGNORECASE):
                 reminder = (
-                    "Reminder: do not write Status: DONE or Status: FAILED in the same message as <tool_use>. "
-                    "Send only <tool_use> tags; after you see the tool results, reply with your answer and one status line."
+                    "PROTOCOL_VIOLATION: You must NOT write Status: DONE or Status: FAILED in the same message as <tool_use>. "
+                    "Send ONLY <tool_use> tag(s) in one message; in the NEXT message, after you see tool results, reply with your answer and exactly one status line."
                 )
                 self.history.append({"role": "user", "content": reminder})
                 save_db_message(session_id, "user", reminder, log_type="context")
+
+            # List-only request: we ran list_files only; complete the turn without another LLM call to avoid model adding unrelated actions
+            if len(tool_calls) == 1 and tool_calls[0].get("name") == "list_files":
+                _goal_lower = (goal or "").strip().lower()
+                _list_goal = (
+                    len(_goal_lower) < 200
+                    and any(x in _goal_lower for x in (
+                        "list files", "liste le contenu", "liste les fichiers", " ls ",
+                        "contenu du répertoire", "contenu du dossier", "répertoire courant",
+                    ))
+                    and not any(x in _goal_lower for x in (" and ", " then ", " puis ", "show ", "read ", "cat ", "affiche ", "create", "crée", "write", "run ", "exécute"))
+                )
+                if _list_goal and any_tool_succeeded:
+                    _final = "Listed directory.\n\nStatus: DONE"
+                    await ui.emit_execution_event("response", _final, phase="done", meta={"final": True})
+                    return {"ok": True, "status": "completed", "logs": logs, "response": _final}
 
             # If every tool call this step was blocked (BLOCKED_REPEAT), stop the loop to avoid infinite retries
             step_observations = [
@@ -283,8 +432,7 @@ class Agent:
         for m in reversed(self.history):
             content = m.get("content", "")
             if m.get("role") == "user" and "<tool_observation" in content:
-                import re as _re
-                last_obs = _re.sub(r"</?tool_observation[^>]*>", "", content).strip()
+                last_obs = re.sub(r"</?tool_observation[^>]*>", "", content).strip()
                 break
         last_response = last_obs or logs[-1] if (last_obs or logs) else "ShellGeist: max steps reached without completing the task."
 

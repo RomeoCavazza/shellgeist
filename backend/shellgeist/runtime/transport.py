@@ -105,6 +105,8 @@ class UIEventEmitter:
         file: str,
         old_content: str,
         new_content: str,
+        *,
+        root: str = "",
     ) -> str | None:
         """Send a review_pending event and wait for decision."""
         if not self.writer or not self.reader:
@@ -118,6 +120,7 @@ class UIEventEmitter:
                 "file": file,
                 "old_content": old_content,
                 "new_content": new_content,
+                "root": root,
             },
         )
 

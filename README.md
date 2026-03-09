@@ -47,31 +47,72 @@ ShellGeist is an AI-powered code assistant that runs inside Neovim. It connects 
 
 Repository layout: Python backend (one package under `backend/shellgeist/`), Neovim plugin in `nvim/`, and top-level scripts for running the daemon.
 
+**Prerequisites:** Python 3.11+, Neovim 0.9+, [nui.nvim](https://github.com/MunifTanjim/nui.nvim) (required for the sidebar), Ollama or OpenAI-compatible API.
+
 ```
-shellgeist/
-├── backend/
-│   └── shellgeist/
-│       ├── cli.py              # CLI and daemon entry
-│       ├── config.py           # Env and config
-│       ├── agent/              # Agent loop, orchestration, parsing
-│       ├── llm/                # Client, prompt, streaming
-│       ├── runtime/            # Server, protocol, session, policy
-│       └── tools/              # read_file, write_file, list_files, shell, edit, patch, git
-├── nvim/
-│   ├── plugin/shellgeist.lua   # Plugin loader
-│   └── lua/shellgeist/
-│       ├── init.lua            # Commands, event dispatch
-│       ├── sidebar.lua         # Chat UI (nui.nvim)
-│       ├── rpc.lua             # Unix socket RPC client
-│       ├── diff.lua            # Diff preview and apply
-│       └── conflict.lua         # Inline accept/reject
-├── assets/
+.
+├── assets
 │   ├── ascii-logo.txt
 │   └── shellgeist.png
-├── flake.nix                   # Nix flake (dev shell, run, build)
-├── pyproject.toml              # Python package
-├── install.sh                  # Wrapper (venv / nix develop / nix-shell)
-└── shellgeist                  # Bash entry script
+├── backend
+│   └── shellgeist
+│       ├── __init__.py
+│       ├── cli.py
+│       ├── config.py
+│       ├── py.typed
+│       ├── agent
+│       │   ├── __init__.py
+│       │   ├── loop.py
+│       │   ├── messages.py
+│       │   ├── orchestrator.py
+│       │   ├── signals.py
+│       │   └── parsing
+│       │       ├── __init__.py
+│       │       ├── json_utils.py
+│       │       ├── normalize.py
+│       │       └── parser.py
+│       ├── llm
+│       │   ├── __init__.py
+│       │   ├── client.py
+│       │   ├── prompt.py
+│       │   ├── rules.py
+│       │   └── stream.py
+│       ├── runtime
+│       │   ├── __init__.py
+│       │   ├── paths.py
+│       │   ├── policy.py
+│       │   ├── protocol.py
+│       │   ├── server.py
+│       │   ├── session.py
+│       │   ├── telemetry.py
+│       │   └── transport.py
+│       └── tools
+│           ├── __init__.py
+│           ├── base.py
+│           ├── edit.py
+│           ├── executor.py
+│           ├── fs.py
+│           ├── git_utils.py
+│           ├── patch.py
+│           └── shell.py
+├── CONTRIBUTING.md
+├── flake.lock
+├── flake.nix
+├── install.sh
+├── LICENSE
+├── nvim
+│   ├── lua
+│   │   └── shellgeist
+│   │       ├── conflict.lua
+│   │       ├── diff.lua
+│   │       ├── init.lua
+│   │       ├── rpc.lua
+│   │       └── sidebar.lua
+│   └── plugin
+│       └── shellgeist.lua
+├── pyproject.toml
+├── README.md
+└── shellgeist
 ```
 
 ---
@@ -159,11 +200,11 @@ Main Neovim commands and how to run the backend.
 | Command | Description |
 |--------|-------------|
 | `shellgeist` / `sgd` | Start the daemon (or run one-off with args). |
-| `:SGChat` | Open the chat sidebar and focus the request input. |
-| `:SGAgent <goal>` | Send a one-shot goal and stream the response. |
+| `:SGSidebar` | Toggle the chat sidebar. |
+| `:SGAgent` / `:SGAgent <goal>` | With no args: open sidebar and focus the request input. With a goal: send the task and stream the response. |
 | `:SGReview` | Open the review panel for current diff / conflicts. |
 | `:SGEdit <file> <instruction>` | Edit a file with a natural-language instruction. |
-| `:SGMode auto` / `:SGMode review` | Set auto vs manual tool approval. |
+| `:SGMode auto` / `:SGMode review` | Set auto vs manual tool approval. In **review** mode, write_file and edit_file show a diff card with [a] accept [r] reject [o] open before applying; in **auto** mode tools run immediately (no diff card). |
 
 **Install (plugin)**  
 Point your Neovim config to the `nvim/` directory (e.g. with lazy.nvim or as a local path). Ensure the `shellgeist` (or `install.sh`) script is on your `PATH` or that the daemon is started with `PYTHONPATH=backend python -m shellgeist.cli`.
@@ -179,11 +220,10 @@ pip install -e .
 shellgeist
 ```
 
----
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, tests, linting, and the pull request process.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, linting, and the pull request process.
 
 ---
 

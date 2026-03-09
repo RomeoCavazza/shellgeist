@@ -19,7 +19,6 @@ class ToolExecutionOutcome:
     @property
     def success(self) -> bool:
         """Heuristic for whether the tool actually did its job."""
-        from shellgeist.runtime.policy import is_failed_result
         return not is_failed_result(self.observation)
 
 async def execute_tool_call(
@@ -51,7 +50,7 @@ async def execute_tool_call(
         classify_result=lambda r: ("transient" if "timeout" in str(r).lower() else None, "")
     )
     
-    res_str = str(res) if res is not None else "Success"
+    res_str = _observation_string(res, func_name)
     loop_guard.record_outcome(func_name, args, res_str)
     
     return ToolExecutionOutcome(
@@ -59,3 +58,20 @@ async def execute_tool_call(
         func_name=func_name,
         observation=res_str
     )
+
+
+def _observation_string(res: Any, func_name: str) -> str:
+    """Turn tool result into a string observation for history and UI (sidebar diff display)."""
+    if res is None:
+        return "Success"
+    if isinstance(res, dict):
+        if func_name == "edit_file":
+            if res.get("ok") and res.get("diff"):
+                file = res.get("file", "?")
+                return f"Successfully applied to {file}\n\nDiff:\n{res['diff']}"
+            if res.get("ok"):
+                return f"Successfully applied to {res.get('file', '?')}."
+            err = res.get("error", "unknown")
+            detail = res.get("detail", "")
+            return f"Error: {err}" + (f" — {detail}" if detail else "")
+    return str(res)

@@ -9,11 +9,11 @@ from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
+from shellgeist.config import socket_path
 from shellgeist.runtime.protocol import SGRequest, SGResult
 from shellgeist.runtime.transport import safe_drain, send_json
 from shellgeist.tools.git_utils import git
 
-DEFAULT_SOCKET = os.path.expanduser("~/.cache/shellgeist.sock")
 _agent_cache: dict[str, Any] = {}
 
 
@@ -23,7 +23,6 @@ def _resolve_root(root_str: str | None) -> Path:
     Enforces that:
     - a root is provided and exists
     - the root is a directory
-    - the root is NOT the user's home directory
     """
     if not root_str:
         raise ValueError("missing_root")
@@ -31,14 +30,6 @@ def _resolve_root(root_str: str | None) -> Path:
     p = Path(root_str).expanduser().resolve()
     if not p.exists() or not p.is_dir():
         raise ValueError("invalid_root")
-
-    home = Path.home().resolve()
-    if p == home:
-        # Provide a descriptive error instead of allowing tools to run in HOME.
-        raise ValueError(
-            f"workspace_root_is_home: WORKSPACE ROOT is your HOME directory ({p}). "
-            "Open Neovim or run ShellGeist inside a project folder instead."
-        )
 
     return p
 
@@ -172,16 +163,17 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             pass
 
 
-async def run_server(socket_path: str = DEFAULT_SOCKET) -> int:
+async def run_server(socket_path_arg: str | None = None) -> int:
     """Start Unix socket server and serve forever."""
-    os.makedirs(os.path.dirname(socket_path), exist_ok=True)
+    path = socket_path_arg or socket_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
-        os.unlink(socket_path)
+        os.unlink(path)
     except FileNotFoundError:
         pass
 
-    server = await asyncio.start_unix_server(client_handler, path=socket_path)
-    print(f"[ShellGeist] daemon listening: {socket_path}")
+    server = await asyncio.start_unix_server(client_handler, path=path)
+    print(f"[ShellGeist] daemon listening: {path}")
     async with server:
         await server.serve_forever()
     return 0

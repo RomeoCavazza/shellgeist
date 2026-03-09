@@ -12,6 +12,8 @@ M._current_status = "request"
 
 local chat_ns = vim.api.nvim_create_namespace("shellgeist_chat")
 local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+-- Nerd Font robot (Material Design Icons robot, U+F06A9)
+local _assistant_header = string.char(0xF3, 0xB0, 0x9A, 0xA9) .. " Assistant"
 local spinner_timer = nil
 local Layout, Input, Popup = nil, nil, nil
 
@@ -46,19 +48,6 @@ local function is_noise(text)
   return false
 end
 
-local function summarize_obs(text)
-  local raw = compact(text, 240)
-  local l = raw:lower()
-  if l:find("module not found") then return " Dependency missing: " .. raw end
-  if l:find("unexpected keyword argument") then return " API mismatch: " .. raw end
-  if l:find("invalid_session_id") then return " Session ID invalid" end
-  if l:find("blocked_repeat_tool") then return " Repeated failing call blocked" end
-  if l:find("pip: command not found") or l:find("externally%-managed") then
-    return " pip blocked in nix — use withPackages"
-  end
-  return raw
-end
-
 -- ── highlight definitions ──────────────────────────────────────────────
 
 local function define_highlights()
@@ -69,7 +58,7 @@ local function define_highlights()
   -- User: header "󰀄 User" only in blue; body stays default
   hl(0, "SGUser",         { fg = "#61afef", ctermfg = 75, bold = true })
   hl(0, "SGUserBody",     { fg = "#e0e0e0", ctermfg = 253 })
-  -- Response / Assistant: header "󰚩 Assistant" only in gray; body stays default
+  -- Response / Assistant: header uses Nerd Font robot icon; body stays default
   hl(0, "SGResponse",     { fg = "#7f848e", ctermfg = 243, bold = true })
   hl(0, "SGResponseBody", { fg = "#e0e0e0", ctermfg = 253 })
   -- Thinking
@@ -144,7 +133,7 @@ local function scroll_bottom()
     if not win_valid(w) then return end
     local ok, n = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
     if ok then pcall(vim.api.nvim_win_set_cursor, w, { n, 0 }) end
-  end, 30)
+  end, 50)
 end
 
 -- ── card builder (avante-style box-drawing) ────────────────────────────
@@ -182,6 +171,25 @@ local function is_diff_content(text)
   if has_hunk then return true end
   if has_old and has_new then return true end
   return false
+end
+
+--- Check if text contains conflict markers (<<<<, =====, >>>>>).
+local function is_conflict_content(text)
+  return text and (text:find("<<<<<<<") or text:find("=======") or text:find(">>>>>>>"))
+end
+
+--- Extract the unified diff portion from a write_file-style observation ("Successfully wrote...\n\nDiff:\n--- a/...").
+--- Returns the full text if no clear diff block is found.
+local function extract_diff_from_observation(text)
+  if not text or text == "" then return text end
+  local from = text:find("\n--- a/") or text:find("\n@@")
+  if from then
+    return text:sub(from + 1)  -- skip the leading \n
+  end
+  if text:find("^--- a/") or text:find("^@@") then
+    return text
+  end
+  return text
 end
 
 -- ── rendering functions ────────────────────────────────────────────────
@@ -229,7 +237,7 @@ local function render_response(text)
   body = strip_status_lines(body)
   if body == "" then return end
 
-  local header = "󰚩 Assistant"
+  local header = _assistant_header
   local start = buf_append({ header })
   if start then hl_range(start, 1, "SGResponse") end
   -- Render full multi-line response body
@@ -245,7 +253,7 @@ end
 local function render_thinking(text)
   if is_noise(text) then return end
   local lines = vim.split(sanitize(text), "\n", { plain = true })
-  local first = "󰋘 " .. (lines[1] or "")
+  local first = "... " .. (lines[1] or "")
   local start = buf_append({ first })
   if start then hl_range(start, 1, "SGThinking") end
   if #lines > 1 then
@@ -332,8 +340,15 @@ local function is_success_line(text)
       or t:find("restored:") ~= nil
 end
 
+-- Strip ANSI escape sequences so run_shell output (e.g. cube animation) doesn't break layout
+local function strip_ansi(text)
+  if not text or text == "" then return text end
+  return (text:gsub("\27%[[%d;]*[a-zA-Z]", ""):gsub("\27%[%?%d;]*[a-zA-Z]", ""):gsub("\27%[=%%]?[^a-zA-Z]*[a-zA-Z]", ""))
+end
+
 local function render_observation(text, meta)
   local raw = sanitize(text)
+  raw = strip_ansi(raw)
   local is_diff = is_diff_content(raw)
   -- Explicit success/failure from backend takes precedence over content heuristics
   local meta_success = (meta and meta.success ~= nil) and meta.success
@@ -346,10 +361,11 @@ local function render_observation(text, meta)
       or raw:lower():find("blocked_") ~= nil
   local is_succ = (meta_success == true) or (meta_success ~= false and is_success_line(raw))
 
-  -- For diffs: keep a compact card (they need multi-line)
+  -- For diffs: show a clear "Diff" card (---/+++/@@) with green/red; box height = full diff (no cap)
   if is_diff then
-    local body_lines = vim.split(raw, "\n", { plain = true })
-    local card = build_card("Result", body_lines, 20)
+    local body_raw = extract_diff_from_observation(raw)
+    local body_lines = vim.split(body_raw, "\n", { plain = true })
+    local card = build_card("Diff", body_lines, 0)
     local start = buf_append(card)
     if start then
       hl_range(start, 1, "SGCardResult")
@@ -359,7 +375,13 @@ local function render_observation(text, meta)
         local line_text = card[i] or ""
         local content = line_text:sub(5)
         hl_partial(line_idx, 0, 4, "SGCardBorder")
-        if content:sub(1, 1) == "+" and content:sub(1, 3) ~= "+++" then
+        if content:sub(1, 7) == "<<<<<<<" then
+          hl_partial(line_idx, 4, -1, "SGDiffAdd")
+        elseif content:sub(1, 7) == "=======" then
+          hl_partial(line_idx, 4, -1, "SGDiffHdr")
+        elseif content:sub(1, 7) == ">>>>>>>" then
+          hl_partial(line_idx, 4, -1, "SGDiffDel")
+        elseif content:sub(1, 1) == "+" and content:sub(1, 3) ~= "+++" then
           hl_partial(line_idx, 4, -1, "SGDiffAdd")
         elseif content:sub(1, 1) == "-" and content:sub(1, 3) ~= "---" then
           hl_partial(line_idx, 4, -1, "SGDiffDel")
@@ -375,14 +397,66 @@ local function render_observation(text, meta)
     return
   end
 
+  -- Conflict markers (<<<</====/>>>>) without unified diff: show as "Conflict" card (full height)
+  if is_conflict_content(raw) then
+    local body_lines = vim.split(raw, "\n", { plain = true })
+    local card = build_card("Conflict", body_lines, 0)
+    local start = buf_append(card)
+    if start then
+      hl_range(start, 1, "SGCardResult")
+      hl_range(start + #card - 1, 1, "SGCardBorder")
+      for i = 2, #card - 1 do
+        local line_idx = start + i - 1
+        local line_text = card[i] or ""
+        local content = line_text:sub(5)
+        hl_partial(line_idx, 0, 4, "SGCardBorder")
+        if content:sub(1, 7) == "<<<<<<<" then
+          hl_partial(line_idx, 4, -1, "SGDiffAdd")
+        elseif content:sub(1, 7) == "=======" then
+          hl_partial(line_idx, 4, -1, "SGDiffHdr")
+        elseif content:sub(1, 7) == ">>>>>>>" then
+          hl_partial(line_idx, 4, -1, "SGDiffDel")
+        else
+          hl_partial(line_idx, 4, -1, "SGCardBody")
+        end
+      end
+    end
+    buf_append({ "" })
+    scroll_bottom()
+    return
+  end
+
+  -- Long run_shell-style output: show in a fixed-height card so it doesn't explode the sidebar
+  local lines = vim.split(raw, "\n", { plain = true })
+  local max_run_output_lines = 14
+  if #lines > 3 and not is_diff then
+    local visible = vim.list_slice(lines, 1, max_run_output_lines)
+    local truncated = #lines > max_run_output_lines
+    local card = build_card("Output", visible, 0)
+    if truncated then
+      table.insert(card, #card, "│ … (" .. (#lines - max_run_output_lines) .. " more lines)")
+    end
+    local start = buf_append(card)
+    if start then
+      hl_range(start, 1, "SGCardResult")
+      hl_range(start + #card - 1, 1, "SGCardBorder")
+      for i = 2, #card - 1 do
+        hl_range(start + i - 1, 1, "SGCardBody")
+      end
+    end
+    buf_append({ "" })
+    scroll_bottom()
+    return
+  end
+
   -- For short results: compact inline
   local summary = compact(raw, 160)
   local prefix, hl_group
   if is_err then
-    prefix = "  ✗ "
+    prefix = "  - "
     hl_group = "SGError"
   elseif is_succ then
-    prefix = "  ✓ "
+    prefix = "  + "
     hl_group = "SGSuccess"
   else
     prefix = "  ← "
@@ -395,7 +469,7 @@ local function render_observation(text, meta)
 end
 
 local function render_error(text)
-  local line = "󰅚 Error: " .. compact(text, 200)
+  local line = "Error: " .. compact(text, 200)
   local start = buf_append({ line, "" })
   if start then hl_range(start, 1, "SGError") end
   scroll_bottom()
@@ -444,7 +518,7 @@ local function render_diff_review(meta)
   end
 
   -- Build card
-  local label = "📝 " .. file
+  local label = "File " .. file
   local card = build_card(label, body, 0)
   local start = buf_append(card)
   if start then
@@ -479,6 +553,7 @@ local function render_diff_review(meta)
   if not M.chat or not buf_valid(M.chat.bufnr) then return end
   local bufnr = M.chat.bufnr
   local responded = false
+  local opened_filepath = nil  -- set when [o] is pressed, so [a] can read from that buffer
 
   local function cleanup()
     pcall(vim.keymap.del, "n", "o", { buffer = bufnr })
@@ -486,21 +561,25 @@ local function render_diff_review(meta)
     pcall(vim.keymap.del, "n", "r", { buffer = bufnr })
   end
 
-  -- [o] open: open file with conflict markers for inline resolution
+  local function cleanup_o_only()
+    pcall(vim.keymap.del, "n", "o", { buffer = bufnr })
+  end
+
+  -- [o] open: open file with conflict markers; keep [a]/[r] so user can accept/reject from sidebar too
   vim.keymap.set("n", "o", function()
     if responded then return end
-    responded = true
-    cleanup()
+    cleanup_o_only()
     if prompt_start and buf_valid(bufnr) then
-      pcall(vim.api.nvim_buf_set_lines, bufnr, prompt_start, prompt_start + 1, false, { "  ↗ Opened in editor" })
-      hl_range(prompt_start, 1, "SGCardBody")
+      pcall(vim.api.nvim_buf_set_lines, bufnr, prompt_start, prompt_start + 1, false, { "  Open in editor — [a] accept   [r] reject   (" .. file .. ")" })
+      hl_range(prompt_start, 1, "SGApproval")
     end
-    -- Resolve absolute file path
+    -- Resolve absolute file path and store for [a] (read buffer content later)
     local filepath = file
     local file_root = meta.root or ""
     if file_root ~= "" and not filepath:match("^/") then
       filepath = file_root .. "/" .. filepath
     end
+    opened_filepath = filepath
     -- Switch to a normal (non-floating) editor window before opening
     local sidebar_wins = {}
     if M.chat and win_valid(M.chat.winid) then sidebar_wins[M.chat.winid] = true end
@@ -519,7 +598,13 @@ local function render_diff_review(meta)
     local conflict = require("shellgeist.conflict")
     conflict.show_inline(filepath, old_content, new_content, {
       on_complete = function(resolved_content)
-        -- resolved_content is nil if rejected, or the final content string
+        -- When user finishes in conflict buffer (ct/ca/cr), we still cleanup sidebar keys and reply
+        responded = true
+        cleanup()
+        if prompt_start and buf_valid(bufnr) then
+          pcall(vim.api.nvim_buf_set_lines, bufnr, prompt_start, prompt_start + 1, false, { "  + Resolved in editor" })
+          hl_range(prompt_start, 1, "SGSuccess")
+        end
         if resolved_content then
           if reply_fn then reply_fn({ cmd = "review_decision", approved = true, content = resolved_content }) end
         else
@@ -528,6 +613,7 @@ local function render_diff_review(meta)
         M.set_thinking(true)
       end,
     })
+    vim.notify("ShellGeist: In editor: cr=reject  ct/ca=accept. Or in sidebar: [a] accept  [r] reject", vim.log.levels.INFO, { title = "ShellGeist" })
   end, { buffer = bufnr, silent = true, noremap = true, desc = "SG: open in editor" })
 
   vim.keymap.set("n", "a", function()
@@ -535,10 +621,18 @@ local function render_diff_review(meta)
     responded = true
     cleanup()
     if prompt_start and buf_valid(bufnr) then
-      pcall(vim.api.nvim_buf_set_lines, bufnr, prompt_start, prompt_start + 1, false, { "  ✓ Accepted" })
+      pcall(vim.api.nvim_buf_set_lines, bufnr, prompt_start, prompt_start + 1, false, { "  + Accepted" })
       hl_range(prompt_start, 1, "SGSuccess")
     end
-    if reply_fn then reply_fn({ cmd = "review_decision", approved = true, content = new_content }) end
+    local content_to_send = new_content
+    if opened_filepath and vim.api.nvim_buf_is_valid(vim.fn.bufnr(opened_filepath)) then
+      local ok, lines = pcall(vim.api.nvim_buf_get_lines, vim.fn.bufnr(opened_filepath), 0, -1, false)
+      if ok and lines and #lines > 0 then
+        content_to_send = table.concat(lines, "\n")
+        if not content_to_send:match("\n$") then content_to_send = content_to_send .. "\n" end
+      end
+    end
+    if reply_fn then reply_fn({ cmd = "review_decision", approved = true, content = content_to_send }) end
     M.set_thinking(true)
   end, { buffer = bufnr, silent = true, noremap = true, desc = "SG: accept diff" })
 
@@ -547,7 +641,7 @@ local function render_diff_review(meta)
     responded = true
     cleanup()
     if prompt_start and buf_valid(bufnr) then
-      pcall(vim.api.nvim_buf_set_lines, bufnr, prompt_start, prompt_start + 1, false, { "  ✗ Rejected" })
+      pcall(vim.api.nvim_buf_set_lines, bufnr, prompt_start, prompt_start + 1, false, { "  - Rejected" })
       hl_range(prompt_start, 1, "SGError")
     end
     if reply_fn then reply_fn({ cmd = "review_decision", approved = false }) end
@@ -592,21 +686,24 @@ local function render_approval_prompt(meta)
     end
   end
 
+  local function cleanup_o_only()
+    if is_write then pcall(vim.keymap.del, "n", "o", { buffer = bufnr }) end
+  end
+
   if is_write then
     vim.keymap.set("n", "o", function()
       if responded then return end
-      responded = true
-      cleanup_maps()
+      cleanup_o_only()
       if start and buf_valid(bufnr) then
-        pcall(vim.api.nvim_buf_set_lines, bufnr, start, start + 1, false, { "  ↗ Opened in editor" })
-        hl_range(start, 1, "SGCardBody")
+        pcall(vim.api.nvim_buf_set_lines, bufnr, start, start + 1, false, { "  Open in editor — [a] approve   [r] reject   (" .. (meta.tool or "") .. ")" })
+        hl_range(start, 1, "SGApproval")
       end
 
       -- Extract file path and new content from tool args
       local args = meta.args or {}
       local file_rel = args.path or args.file_path or args.file or ""
       local new_content = args.content or ""
-      local file_root = meta.root or "" -- may need to get from global state if local meta missing
+      local file_root = meta.root or ""
 
       local filepath = file_rel
       if file_root ~= "" and not filepath:match("^/") then
@@ -632,15 +729,17 @@ local function render_approval_prompt(meta)
       end
       if target_win then vim.api.nvim_set_current_win(target_win) end
 
-      -- Show conflict markers
+      -- Show conflict markers; keep [a]/[r] in sidebar so user can approve/reject from there too
       local conflict = require("shellgeist.conflict")
       conflict.show_inline(filepath, old_content, new_content, {
         on_complete = function(resolved_content)
+          responded = true
+          cleanup_maps()
+          if start and buf_valid(bufnr) then
+            pcall(vim.api.nvim_buf_set_lines, bufnr, start, start + 1, false, { "  + Resolved in editor" })
+            hl_range(start, 1, "SGSuccess")
+          end
           if resolved_content then
-            -- Note: for write_file tool approval, we don't send resolved_content back to the TOOL,
-            -- because the tool is write_file(content=X).
-            -- However, we can send approved=true.
-            -- FUTURE: maybe the protocol should support updating tool args in mid-flight?
             if reply_fn then reply_fn({ cmd = "approval_response", approved = true }) end
           else
             if reply_fn then reply_fn({ cmd = "approval_response", approved = false }) end
@@ -648,6 +747,7 @@ local function render_approval_prompt(meta)
           M.set_thinking(true)
         end,
       })
+      vim.notify("ShellGeist: In editor: cr=reject  ct/ca=accept. Or in sidebar: [a] approve  [r] reject", vim.log.levels.INFO, { title = "ShellGeist" })
     end, { buffer = bufnr, silent = true, noremap = true, desc = "SG: open for review" })
   end
 
@@ -657,7 +757,7 @@ local function render_approval_prompt(meta)
     cleanup_maps()
     -- Replace the prompt line with approved status
     if start and buf_valid(bufnr) then
-      pcall(vim.api.nvim_buf_set_lines, bufnr, start, start + 1, false, { "  ✓ Approved" })
+      pcall(vim.api.nvim_buf_set_lines, bufnr, start, start + 1, false, { "  + Approved" })
       hl_range(start, 1, "SGSuccess")
     end
     if reply_fn then reply_fn({ cmd = "approval_response", approved = true }) end
@@ -669,7 +769,7 @@ local function render_approval_prompt(meta)
     responded = true
     cleanup_maps()
     if start and buf_valid(bufnr) then
-      pcall(vim.api.nvim_buf_set_lines, bufnr, start, start + 1, false, { "  ✗ Rejected" })
+      pcall(vim.api.nvim_buf_set_lines, bufnr, start, start + 1, false, { "  - Rejected" })
       hl_range(start, 1, "SGError")
     end
     if reply_fn then reply_fn({ cmd = "approval_response", approved = false }) end
@@ -851,13 +951,14 @@ function M.render_welcome()
   if not M.chat or not buf_valid(M.chat.bufnr) then return end
   M._streaming_assistant = false
   M._streaming_thinking = false
-  -- ASCII banner "SHELLGEIST" — scale to fit sidebar (every 2nd char, UTF-8 safe)
+  -- ASCII banner "SHELLGEIST" — scale to fit sidebar width (UTF-8 safe).
+  -- Neovim has no per-window font size, so we shrink by keeping every 2nd character (~50% width).
   local function utf8_byte_len(b)
     if b == nil or b < 128 then return 1 end
-    if b >= 0x80 and b < 0xC0 then return 1 end -- continuation byte, do not treat as lead
-    if b < 0xE0 then return 2 end -- 110xxxxx
-    if b < 0xF0 then return 3 end -- 1110xxxx
-    if b < 0xF8 then return 4 end -- 11110xxx
+    if b >= 0x80 and b < 0xC0 then return 1 end
+    if b < 0xE0 then return 2 end
+    if b < 0xF0 then return 3 end
+    if b < 0xF8 then return 4 end
     return 1
   end
   local function shrink_line(s)
@@ -888,27 +989,18 @@ function M.render_welcome()
     "░  ░  ░   ░  ░░ ░   ░     ░ ░     ░ ░   ░ ░   ░    ░    ▒ ░░  ░  ░    ░      ",
     "      ░   ░  ░  ░   ░  ░    ░  ░    ░  ░      ░    ░  ░ ░        ░           ",
   }
+  local sidebar_width = 50
+  if M.chat and win_valid(M.chat.winid) then
+    sidebar_width = vim.api.nvim_win_get_width(M.chat.winid)
+  end
+  local function center_line(s)
+    local w = vim.fn.strdisplaywidth(s)
+    local pad = math.max(0, math.floor((sidebar_width - w) / 2))
+    return string.rep(" ", pad) .. s
+  end
   local lines = { "" }
   for _, ln in ipairs(banner) do
-    table.insert(lines, shrink_line(ln))
-  end
-  -- Align: pad each line so first non-space is at same column (fix 1st row shifted left)
-  do
-    local max_start = 0
-    for i = 2, #lines do
-      local pos = lines[i]:find("%S")
-      if pos then max_start = math.max(max_start, pos) end
-    end
-    for i = 2, #lines do
-      local pos = lines[i]:find("%S")
-      if pos and pos < max_start then
-        lines[i] = string.rep(" ", max_start - pos) .. lines[i]
-      end
-    end
-    -- First banner line was originally indented more; add one extra space so it lines up visually
-    if lines[2] and lines[2]:find("^%s") then
-      lines[2] = " " .. lines[2]
-    end
+    table.insert(lines, center_line(shrink_line(ln)))
   end
   table.insert(lines, "")
   table.insert(lines, "───────────────────────────────────────────")
@@ -916,16 +1008,13 @@ function M.render_welcome()
   table.insert(lines, "  modes:  :SGMode auto | review")
   table.insert(lines, "  nav:    q close  <Esc> → chat")
 
-  -- Show last known workspace context (root / session / mode) for quick diagnostics.
+  -- Show last known workspace context (root / mode) for quick diagnostics; session hidden.
   local ok_sg, sg = pcall(require, "shellgeist")
   if ok_sg and sg and type(sg.get_last_context) == "function" then
     local ctx = sg.get_last_context() or {}
     local root = ctx.root or "(unknown root)"
-    local session = ctx.session_id or "default"
     local mode = ctx.mode or "auto"
-    local short_session = tostring(session):sub(1, 7)
     table.insert(lines, string.format("  root:    %s", root))
-    table.insert(lines, string.format("  session: %s", short_session))
     table.insert(lines, string.format("  mode:    %s", mode))
   end
 
@@ -968,7 +1057,7 @@ function M.append_text(text, msg_type, meta)
     local is_first = not M._streaming_thinking
     if is_first then
       M._streaming_thinking = true
-      local hdr = buf_append({ "󰋘 Thinking" })
+      local hdr = buf_append({ "... Thinking" })
       if hdr then hl_range(hdr, 1, "SGThinking") end
       buf_append({ "" })
     end
@@ -1005,7 +1094,7 @@ function M.append_text(text, msg_type, meta)
     local is_first = not M._streaming_assistant
     if is_first then
       M._streaming_assistant = true
-      local hdr = buf_append({ "󰚩 Assistant" })
+      local hdr = buf_append({ _assistant_header })
       if hdr then hl_range(hdr, 1, "SGResponse") end
       buf_append({ "" })  -- content starts on new line
     end
@@ -1040,7 +1129,7 @@ function M.append_text(text, msg_type, meta)
       if ok_get and line_list and #line_list >= 1 then
         local last_assistant_idx = nil
         for i = line_count, 1, -1 do
-          if (line_list[i] or ""):find("󰚩 Assistant") then
+          if (line_list[i] or ""):find(_assistant_header) then
             last_assistant_idx = i
             break
           end
@@ -1103,7 +1192,7 @@ function M.append_text(text, msg_type, meta)
           for i = line_count, 1, -1 do
             local L = (line_list[i] or ""):gsub("^%s+", ""):gsub("%s+$", "")
             if L == sep then last_sep_idx = i end
-            if (line_list[i] or ""):find("󰚩 Assistant") and last_assistant_idx == nil then
+            if (line_list[i] or ""):find(_assistant_header) and last_assistant_idx == nil then
               last_assistant_idx = i
             end
             if last_sep_idx and last_assistant_idx then break end
@@ -1113,7 +1202,7 @@ function M.append_text(text, msg_type, meta)
             body = strip_status_lines(body)
             body = vim.trim(body)
             if body ~= "" and not content_is_only_tool_use(body) then
-              local new_lines = { "󰚩 Assistant" }
+              local new_lines = { _assistant_header }
               for _, ln in ipairs(vim.split(body, "\n", { plain = true })) do
                 table.insert(new_lines, ln)
               end

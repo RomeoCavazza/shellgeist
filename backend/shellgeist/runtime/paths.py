@@ -4,9 +4,22 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def resolve_repo_path(root: Path, rel: str) -> Path:
+def read_repo_file(path: Path) -> str:
+    """Read file content as UTF-8, replacing invalid bytes.
+
+    Use this for any file under the repo so behavior is consistent across tools.
+    """
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def resolve_repo_path(root: Path | str, rel: str) -> Path:
     """Resolve *rel* inside *root*, ensuring it stays within the workspace.
 
+    *root* may be a Path or a path string.
+    If *rel* is a path suffix of the absolute root (e.g. root is
+    /home/user/Bureau/projets/shellgeist and rel is "Bureau/projets/shellgeist"),
+    it is normalized to "." so that "describe Bureau/projets/shellgeist" works
+    when the workspace is that directory.
     Rules:
     - Home-relative paths (~/) are expanded.
     - Relative paths are resolved against *root*.
@@ -16,7 +29,14 @@ def resolve_repo_path(root: Path, rel: str) -> Path:
     if not rel:
         raise ValueError("invalid_path: empty path")
 
-    root = root.resolve()
+    root = Path(root).resolve() if isinstance(root, str) else root.resolve()
+    rel_stripped = rel.strip().rstrip("/")
+    if rel_stripped:
+        root_parts = root.parts
+        rel_parts = Path(rel_stripped).expanduser().parts
+        if rel_parts and len(rel_parts) <= len(root_parts):
+            if root_parts[-len(rel_parts) :] == rel_parts:
+                rel = "."
     p = Path(rel).expanduser()
 
     # Absolute path: only allowed if it already lives under the workspace root.

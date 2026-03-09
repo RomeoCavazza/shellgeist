@@ -51,6 +51,11 @@ def http_timeout() -> int:
     return _env_int("SHELLGEIST_HTTP_TIMEOUT", 300)
 
 
+def stream_idle_timeout() -> int:
+    """Max seconds to wait for the next LLM stream chunk before aborting (avoids hanging 'thinking')."""
+    return _env_int("SHELLGEIST_STREAM_IDLE_TIMEOUT", 90)
+
+
 def models_list_timeout() -> int:
     return _env_int("SHELLGEIST_MODELS_LIST_TIMEOUT", 5)
 
@@ -64,6 +69,22 @@ def debug_enabled() -> bool:
     """True when ``SHELLGEIST_DEBUG`` is set to a truthy value."""
     v = str(_env("SHELLGEIST_DEBUG", "")).strip().lower()
     return v in {"1", "true", "yes", "on", "debug"}
+
+
+# --- Paths (cache, socket, DB) ---
+def cache_dir() -> str:
+    """Directory for ShellGeist cache (e.g. history DB). Override with SHELLGEIST_CACHE_DIR."""
+    return os.path.expanduser(_env("SHELLGEIST_CACHE_DIR", "~/.cache/shellgeist"))
+
+
+def socket_path() -> str:
+    """Unix socket path for the daemon. Override with SHELLGEIST_SOCKET."""
+    return os.path.expanduser(_env("SHELLGEIST_SOCKET", "~/.cache/shellgeist.sock"))
+
+
+def history_db_path() -> str:
+    """SQLite path for session history."""
+    return os.path.join(cache_dir(), "history.db")
 
 
 # Re-export for external consumers that need env_int

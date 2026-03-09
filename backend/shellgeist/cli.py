@@ -14,7 +14,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-SOCKET_PATH = os.path.expanduser("~/.cache/shellgeist.sock")
+from shellgeist.config import socket_path
+
+# Default socket path (from config; overridable via --socket for ping)
+SOCKET_PATH = socket_path()
 
 
 def _jprint(obj: Any) -> None:
@@ -25,13 +28,15 @@ def _jprint(obj: Any) -> None:
 # ── agent chat ──────────────────────────────────────────────────────────
 
 
-async def _run_agent_chat(goal: str, mode: str = "review") -> int:
+async def _run_agent_chat(goal: str, mode: str = "review", socket_path_arg: str | None = None) -> int:
     """Connect to daemon and stream execution events to terminal."""
-    if not os.path.exists(SOCKET_PATH):
+    path = (socket_path_arg or socket_path()).strip()
+    path = os.path.expanduser(path)
+    if not os.path.exists(path):
         print("[!] Daemon not running. Start with: shellgeist daemon")
         return 1
 
-    reader, writer = await asyncio.open_unix_connection(SOCKET_PATH)
+    reader, writer = await asyncio.open_unix_connection(path)
     payload = {"cmd": "agent_task", "goal": goal, "root": os.getcwd(), "mode": mode}
     writer.write((json.dumps(payload) + "\n").encode())
     await writer.drain()
@@ -94,14 +99,17 @@ async def _run_agent_chat(goal: str, mode: str = "review") -> int:
 def cmd_agent(args: argparse.Namespace) -> int:
     """Run a task via the agent daemon."""
     mode = "auto" if args.auto else "review"
-    return asyncio.run(_run_agent_chat(args.goal, mode=mode))
+    socket_arg = getattr(args, "socket", None)
+    return asyncio.run(_run_agent_chat(args.goal, mode=mode, socket_path_arg=socket_arg))
 
 
 def cmd_daemon(args: argparse.Namespace) -> int:
     """Start the background daemon."""
     from shellgeist.runtime.server import run_server
 
-    return asyncio.run(run_server())
+    socket_arg = getattr(args, "socket", None)
+    path = os.path.expanduser(socket_arg) if socket_arg else None
+    return asyncio.run(run_server(path))
 
 
 def cmd_debug(args: argparse.Namespace) -> int:
@@ -109,11 +117,10 @@ def cmd_debug(args: argparse.Namespace) -> int:
     from shellgeist.llm.client import get_client
 
     try:
-        client_fast, model_fast = get_client("fast")
-        client_smart, model_smart = get_client("smart")
+        client, model = get_client()
         models_ok = True
     except Exception as e:
-        model_fast = model_smart = f"error: {e}"
+        model = f"error: {e}"
         models_ok = False
 
     _jprint({
@@ -124,8 +131,7 @@ def cmd_debug(args: argparse.Namespace) -> int:
         "SOCKET_PATH": SOCKET_PATH,
         "OPENAI_BASE_URL": os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:11434/v1"),
         "OPENAI_API_KEY_set": bool(os.getenv("OPENAI_API_KEY")),
-        "SHELLGEIST_MODEL_FAST": model_fast,
-        "SHELLGEIST_MODEL_SMART": model_smart,
+        "SHELLGEIST_MODEL": model,
         "models_ok": models_ok,
     })
     return 0
@@ -146,7 +152,8 @@ def cmd_ping(args: argparse.Namespace) -> int:
     """Ping the daemon."""
     import socket
 
-    sock_path = os.path.expanduser(args.socket)
+    sock_path = getattr(args, "socket", None) or socket_path()
+    sock_path = os.path.expanduser(sock_path)
 
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -192,10 +199,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("goal", help="Task goal")
     sp.add_argument("--auto", action="store_true", help="Run in auto mode (bypass review)")
     sp.add_argument("--review", action="store_true", default=True, help="Run in review mode (default)")
+    sp.add_argument(
+        "--socket", "-s",
+        default=None,
+        help="Daemon socket path (default: from SHELLGEIST_SOCKET or ~/.cache/shellgeist.sock)",
+    )
     sp.set_defaults(fn=cmd_agent)
 
     # daemon
     sp = sub.add_parser("daemon", help="Start the background daemon")
+    sp.add_argument(
+        "--socket", "-s",
+        default=None,
+        help="Socket path (default: from SHELLGEIST_SOCKET or ~/.cache/shellgeist.sock)",
+    )
     sp.set_defaults(fn=cmd_daemon)
 
     # debug
@@ -213,8 +230,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("ping", help="Ping the ShellGeist daemon")
     sp.add_argument(
         "--socket", "-s",
-        default="~/.cache/shellgeist.sock",
-        help="Daemon socket path",
+        default=None,
+        help="Daemon socket path (default: from SHELLGEIST_SOCKET or ~/.cache/shellgeist.sock)",
     )
     sp.set_defaults(fn=cmd_ping)
 

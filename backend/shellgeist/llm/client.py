@@ -12,11 +12,10 @@ from typing import Any
 
 from shellgeist.config import (
     debug_enabled as _debug_enabled,
-)
-from shellgeist.config import (
     http_timeout,
     models_list_timeout,
     models_probe_timeout,
+    stream_idle_timeout,
     openai_api_key,
     openai_base_url,
     shellgeist_model,
@@ -215,7 +214,8 @@ async def create_stream(
     thread.start()
 
     _log("Stream thread started, waiting for first chunk...")
-    idle_timeout_s = max(30, timeout_s)
+    # Cap idle wait between chunks so we don't hang "thinking" for 5+ minutes (http_timeout is 300s).
+    idle_timeout_s = max(30, stream_idle_timeout())
     while True:
         try:
             item = await loop.run_in_executor(None, lambda: out_queue.get(timeout=idle_timeout_s))
@@ -259,10 +259,10 @@ def list_local_models(base_url: str) -> list[str]:
         return []
 
 
-def get_client(kind: str = "smart") -> tuple[OpenAICompatClient, str]:
+def get_client() -> tuple[OpenAICompatClient, str]:
     """
-    Returns the configured AI client and model.
-    Implements discovery and fallbacks to avoid crashes when the preferred model is missing.
+    Returns the configured AI client and model (SHELLGEIST_MODEL).
+    Implements discovery and fallbacks when the preferred model is missing.
     """
     base_url = openai_base_url()
     api_key = openai_api_key()

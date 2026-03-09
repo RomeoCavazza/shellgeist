@@ -9,7 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from shellgeist.tools.base import registry
-from shellgeist.runtime.paths import resolve_repo_path
+from shellgeist.runtime.paths import read_repo_file, resolve_repo_path
 
 # Directories always excluded from recursive listings / searches
 _IGNORED_DIRS = frozenset({
@@ -45,7 +45,7 @@ def read_file(path: str | None = None, root: str = "", file_path: str | None = N
         if not hint and ("/" in target or "Bureau" in target or target.count(os.sep) > 1):
             hint = " Use a path relative to project root, e.g. README.md or backend/main.py."
         raise FileNotFoundError(f"File not found: {target}.{hint}")
-    return p.read_text(encoding="utf-8", errors="replace")
+    return read_repo_file(p)
 
 
 class RepoMapInput(BaseModel):
@@ -62,12 +62,6 @@ def get_repo_map(root: str, **kwargs: Any) -> str:
     Returns a string representation of the file tree.
     """
     p_root = Path(root).resolve()
-    home = Path.home().resolve()
-    if p_root == home:
-        raise PermissionError(
-            f"WORKSPACE ROOT is your HOME directory ({p_root}). "
-            "Open Neovim inside a project folder first."
-        )
     out = []
     for dirpath, dirnames, filenames in os.walk(p_root):
         # Prune hidden and ignored dirs in-place
@@ -102,6 +96,8 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
     p = resolve_repo_path(Path(root), target)
     p.parent.mkdir(parents=True, exist_ok=True)
 
+    # Normalize line endings so LLM \r\n or stray \r don't cause SyntaxError (e.g. "import time\r")
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
     # Fix double-escaped newlines from LLMs (literal \n instead of real newlines)
     if "\n" not in content and "\\n" in content:
         content = content.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "")
@@ -111,7 +107,7 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
     existed = p.exists()
     if existed:
         try:
-            old_text = p.read_text(encoding="utf-8", errors="replace")
+            old_text = read_repo_file(p)
         except Exception:
             pass
 
@@ -136,7 +132,18 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
             diff_str = "".join(diff_lines)[:2000]
             msg += f"\n\nDiff:\n{diff_str}"
     elif not existed:
-        msg += " (new file)"
+        # New file: show a unified diff (all lines as +) so the sidebar can display a "Diff" card
+        diff_lines = list(difflib.unified_diff(
+            [],
+            content.splitlines(keepends=True),
+            fromfile=f"a/{target}",
+            tofile=f"b/{target}",
+        ))
+        if diff_lines:
+            diff_str = "".join(diff_lines)[:2000]
+            msg += f" (new file)\n\nDiff:\n{diff_str}"
+        else:
+            msg += " (new file)"
     return msg
 
 
@@ -146,14 +153,6 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
 )
 def list_files(directory: str = ".", root: str = "", recursive: bool = False, depth: int = 3, max_results: int = 100, **kwargs: Any) -> list[str]:
     p = resolve_repo_path(Path(root), directory)
-
-    # Guard: refuse to scan a home directory (likely misconfigured root)
-    home = Path.home().resolve()
-    if p.resolve() == home:
-        raise PermissionError(
-            f"WORKSPACE ROOT is your HOME directory ({p}). "
-            "Open Neovim inside a project folder first."
-        )
 
     if not p.exists() or not p.is_dir():
         hint = f" Hint: try a relative path like '{Path(directory).name}' instead." if directory.startswith("/") else ""

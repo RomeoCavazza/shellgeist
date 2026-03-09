@@ -8,6 +8,7 @@ __pycache__/
 .dist-info/
 .venv/
 venv/
+build/
 
 # nix
 result

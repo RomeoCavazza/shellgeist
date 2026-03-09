@@ -39,22 +39,6 @@ class NoToolDecision:
     feedback: str | None = None
 
 
-class ToolCallQueue:
-    def __init__(self, tool_calls: list[dict[str, Any]] | None = None) -> None:
-        self._items = list(tool_calls or [])
-        self._index = 0
-
-    def has_next(self) -> bool:
-        return self._index < len(self._items)
-
-    def next(self) -> dict[str, Any] | None:
-        if not self.has_next():
-            return None
-        item = self._items[self._index]
-        self._index += 1
-        return item
-
-
 # ── Plaintext tool call detection ───────────────────────────────────────
 # 7B models sometimes output tool calls as plain text instead of XML tags.
 # E.g. "ShellCommandInput: {"command": "ls"}" or "I'll use run_shell: {"command": "ls"}"
@@ -313,11 +297,4 @@ def decide_no_tool_action(
             "Output ONLY a <tool_use> tag like this — no other text:\n"
             "<tool_use>{\"name\": \"list_files\", \"arguments\": {\"directory\": \".\"}}</tool_use>"
         ),
-    )
-
-
-def build_schema_error_message(func_name: str, missing: list[str]) -> str:
-    return (
-        f"TOOL_SCHEMA_ERROR: {func_name} missing required args: {', '.join(missing)}. "
-        "Use exact tool schema and retry with complete parameters."
     )

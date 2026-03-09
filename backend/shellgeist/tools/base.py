@@ -5,6 +5,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import ValidationError
+
 
 @dataclass
 class Tool:
@@ -21,6 +23,13 @@ class Tool:
                 extra_kwargs = {k: v for k, v in kwargs.items() if k not in model_fields}
                 validated = self.input_model.model_validate(model_kwargs)
                 return self.func(**validated.model_dump(), **extra_kwargs)
+            except ValidationError as e:
+                err = str(e)
+                if self.name == "read_file" and ("path" in err.lower() or "missing" in err.lower()):
+                    return "Error: read_file requires argument 'path'. Example: {\"path\": \"README.md\"}."
+                if self.name == "list_files" and ("directory" in err.lower() or "missing" in err.lower()):
+                    return "Error: list_files requires argument 'directory'. Example: {\"directory\": \".\"}."
+                return f"Error: Validation failed for {self.name}. {e}"
             except Exception as e:
                 return f"Error: Validation failed for {self.name}. {e}"
         return self.func(**kwargs)

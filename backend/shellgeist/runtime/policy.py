@@ -88,12 +88,22 @@ class LoopGuard:
         call_hash = self._hash_call(tool_name, args)
         self.recent_calls.append(call_hash)
         if call_hash in self.blocked_call_hashes:
-            return LoopGuardVerdict.BLOCK, "BLOCKED_REPEAT_TOOL: Exact call failed repeatedly."
+            hint = ""
+            if tool_name == "run_shell":
+                cmd = (args.get("command") or "").strip()
+                if ".py" in cmd or "python" in cmd:
+                    hint = " Use 'python3 <your_script>.py', not './your_script.py'. This call was blocked after too many repeats."
+            return LoopGuardVerdict.BLOCK, "BLOCKED_REPEAT_TOOL: Exact call failed repeatedly." + hint
         
         count = self.call_counts.get(call_hash, 0) + 1
         self.call_counts[call_hash] = count
         if count >= self.config.block_threshold:
-            return LoopGuardVerdict.BLOCK, f"BLOCKED_REPEAT_TOOL: {tool_name} repeated {count} times."
+            hint = ""
+            if tool_name == "run_shell":
+                cmd = (args.get("command") or "").strip()
+                if ".py" in cmd or "python" in cmd:
+                    hint = " Use 'python3 <your_script>.py'. This call was blocked after too many repeats."
+            return LoopGuardVerdict.BLOCK, f"BLOCKED_REPEAT_TOOL: {tool_name} repeated {count} times." + hint
         
         return LoopGuardVerdict.ALLOW, ""
 
@@ -105,7 +115,12 @@ class LoopGuard:
             self.failure_counts[call_hash] = f_count
             if f_count >= 2:
                 self.blocked_call_hashes.add(call_hash)
-                return True, f"BLOCKED_REPEAT_FAILURE: {tool_name} failed {f_count} times with same args. Stop retrying."
+                hint = ""
+                if tool_name == "run_shell":
+                    cmd = (args.get("command") or "").strip()
+                    if ".py" in cmd or "python" in cmd:
+                        hint = " Use 'python3 <your_script>.py'. Stop retrying the same failing command."
+                return True, f"BLOCKED_REPEAT_FAILURE: {tool_name} failed {f_count} times with same args. Stop retrying." + hint
         else:
             s_count = self.success_counts.get(call_hash, 0) + 1
             self.success_counts[call_hash] = s_count

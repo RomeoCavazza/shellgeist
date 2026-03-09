@@ -252,19 +252,6 @@ function M.run_agent(goal)
 
     ensure_daemon(function()
       local root = project_root()
-      local home = vim.loop.os_homedir()
-      if root == home then
-        notify("WORKSPACE ROOT is your HOME directory (" .. root .. "). Open Neovim inside a project folder first.", vim.log.levels.ERROR)
-        if not sidebar.is_open() then
-          local ok_open, err_open = pcall(sidebar.open)
-          if not ok_open then
-            notify("sidebar.open failed: " .. tostring(err_open), vim.log.levels.ERROR)
-            return
-          end
-        end
-        sidebar.append_text("WORKSPACE ROOT is your HOME directory (" .. root .. "). Open Neovim inside a project folder first.", "error")
-        return
-      end
       local session_id = vim.fn.sha256(root)
       M._last_root = root
       M._last_session_id = session_id
@@ -302,7 +289,7 @@ function M.run_agent(goal)
             elseif phase == "thinking" or phase == "streaming" or phase == "tool_use" then
               thinking = true
             end
-            -- Show rich status text (e.g. "🔍 Reading main.py") when available
+            -- Show rich status text (e.g. "[read] main.py") when available
             if thinking and content ~= "" then
               sidebar.set_thinking(true)
               if sidebar.prompt and sidebar.prompt.border then
@@ -380,7 +367,7 @@ function M.run_agent(goal)
             if #args_str > 300 then args_str = args_str:sub(1, 300) .. "..." end
 
             sidebar.set_thinking(false)
-            sidebar.append_text("⏸ Approval needed: " .. tool, "action", meta)
+            sidebar.append_text("Approval needed: " .. tool, "action", meta)
             sidebar.append_text(args_str, "code", meta)
             sidebar.append_text("", "approval_prompt", { tool = tool, reply_fn = current_reply_fn })
             return true
@@ -393,6 +380,9 @@ function M.run_agent(goal)
               sidebar.append_text(content, "thinking", meta)
             end
           elseif channel == "response" then
+            if phase == "done" or meta.final then
+              sidebar.set_thinking(false)
+            end
             if meta.chunk then
               sidebar.append_text(content, "response_chunk", meta)
             else
@@ -405,6 +395,9 @@ function M.run_agent(goal)
           elseif channel == "tool_result" then
             sidebar.append_text(content, "observation", meta)
           elseif channel == "error" then
+            if phase == "done" or meta.final then
+              sidebar.set_thinking(false)
+            end
             sidebar.append_text(content, "error", meta)
           end
           return true
@@ -440,6 +433,7 @@ function M.run_agent(goal)
             if handle_event(ev, reply) then return end
             -- Error from daemon final result
             if ev.ok == false then
+              sidebar.set_thinking(false)
               local err = ev.error or "error"
               local detail = ev.detail and (" (" .. ev.detail .. ")") or ""
               sidebar.append_text(err .. detail, "error")
@@ -484,54 +478,6 @@ vim.api.nvim_create_user_command("SGPing", function()
   end)
 end, {})
 
-vim.api.nvim_create_user_command("SGChat", function(opts)
-  local text = opts.args
-  rpc.request(M._cfg.socket, { cmd = "chat", text = text }, function(ev)
-    handle_result(ev, function(res)
-      if res.answer then
-        notify(res.answer)
-      else
-        notify("ok")
-      end
-    end)
-  end)
-end, { nargs = "+" })
-
-vim.api.nvim_create_user_command("SGPlan", function(opts)
-  local goal = opts.args
-  local root = project_root()
-  local home = vim.loop.os_homedir()
-  if root == home then
-    notify("WORKSPACE ROOT is your HOME directory (" .. root .. "). Open Neovim inside a project folder first.", vim.log.levels.ERROR)
-    return
-  end
-  rpc.request(M._cfg.socket, { cmd = "plan", root = root, goal = goal }, function(ev)
-    handle_result(ev, function(res)
-      notify("plan ok (" .. tostring(#(res.steps or {})) .. " steps)")
-    end)
-  end)
-end, { nargs = "+" })
-
-vim.api.nvim_create_user_command("SGShell", function(opts)
-  local task = opts.args
-  local root = project_root()
-  local home = vim.loop.os_homedir()
-  if root == home then
-    notify("WORKSPACE ROOT is your HOME directory (" .. root .. "). Open Neovim inside a project folder first.", vim.log.levels.ERROR)
-    return
-  end
-  rpc.request(M._cfg.socket, { cmd = "shell", root = root, task = task }, function(ev)
-    handle_result(ev, function(res)
-      local blocked = res.blocked or {}
-      if #blocked > 0 then
-        notify("shell plan: blocked " .. tostring(#blocked) .. " cmd(s)", vim.log.levels.WARN)
-      else
-        notify("shell plan ok (" .. tostring(#(res.commands or {})) .. " cmd(s))")
-      end
-    end)
-  end)
-end, { nargs = "+" })
-
 vim.api.nvim_create_user_command("SGEdit", function(opts)
   -- SGEdit <file> <instruction...>
   local fargs = opts.fargs
@@ -543,12 +489,6 @@ vim.api.nvim_create_user_command("SGEdit", function(opts)
   local file = fargs[1]
   local instruction = table.concat(fargs, " ", 2)
   local root = project_root()
-  local home = vim.loop.os_homedir()
-  if root == home then
-    notify("WORKSPACE ROOT is your HOME directory (" .. root .. "). Open Neovim inside a project folder first.", vim.log.levels.ERROR)
-    return
-  end
-
   -- immediate feedback (so never "silent")
   notify("edit: sending request...")
 
@@ -580,11 +520,6 @@ end, { nargs = "+", complete = "file" })
 
 vim.api.nvim_create_user_command("SGStatus", function()
   local root = project_root()
-  local home = vim.loop.os_homedir()
-  if root == home then
-    notify("WORKSPACE ROOT is your HOME directory (" .. root .. "). Open Neovim inside a project folder first.", vim.log.levels.ERROR)
-    return
-  end
   rpc.request(M._cfg.socket, { cmd = "git_status", root = root }, function(ev)
     handle_result(ev, function(res)
       if res.inside_git == false then
@@ -608,6 +543,21 @@ vim.api.nvim_create_user_command("SGStatus", function()
     end)
   end)
 end, {})
+
+-- ── SGMode: set agent mode (auto | review) ──
+vim.api.nvim_create_user_command("SGMode", function(opts)
+  local arg = (opts.args or ""):gsub("%s+", ""):lower()
+  if arg == "" then
+    notify("ShellGeist mode: " .. M.get_mode(), vim.log.levels.INFO)
+    return
+  end
+  if arg ~= "auto" and arg ~= "review" then
+    notify("SGMode: use 'auto' or 'review'", vim.log.levels.WARN)
+    return
+  end
+  M.set_mode(arg)
+  notify("ShellGeist mode: " .. arg, vim.log.levels.INFO)
+end, { nargs = "?", complete = function() return { "auto", "review" } end })
 
 -- ── SGReview: show git diff in review panel (accept/reject/stage) ──
 -- Bang (!) opens flat diff tab instead of inline conflict view.
@@ -722,8 +672,7 @@ vim.api.nvim_create_user_command("SGDiagnostic", function()
   add("project_root", project_root())
   add("OPENAI_BASE_URL", vim.env.OPENAI_BASE_URL or "(not set)")
   add("OPENAI_API_KEY", vim.env.OPENAI_API_KEY and "(set)" or "(not set)")
-  add("SHELLGEIST_MODEL_FAST", vim.env.SHELLGEIST_MODEL_FAST or "(default)")
-  add("SHELLGEIST_MODEL_SMART", vim.env.SHELLGEIST_MODEL_SMART or "(default)")
+  add("SHELLGEIST_MODEL", vim.env.SHELLGEIST_MODEL or "(default)")
   add("SHELLGEIST_DEBUG", vim.env.SHELLGEIST_DEBUG or "0")
 
   -- Probe daemon

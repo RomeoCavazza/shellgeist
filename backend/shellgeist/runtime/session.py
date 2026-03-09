@@ -7,9 +7,9 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
-from shellgeist.agent.messages import Message
+from shellgeist.config import history_db_path
 
-DB_PATH = os.path.expanduser("~/.cache/shellgeist/history.db")
+DB_PATH = history_db_path()
 
 _DB_TIMEOUT = 5  # seconds
 

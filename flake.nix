@@ -17,8 +17,6 @@
           pydantic
           anyio
           # dev
-          pytest
-          pytest-asyncio
           ruff
           mypy
         ]);
@@ -55,12 +53,13 @@
 
         devShells.default = pkgs.mkShell {
           packages = [
+            shellgeist
             pythonEnv
             pkgs.nixd      # nix LSP
           ];
           env.PYTHONPATH = "${toString ./backend}";
           shellHook = ''
-            echo "🐚 ShellGeist dev shell (Python ${python.version})"
+            echo "ShellGeist dev shell (Python ${python.version})"
           '';
         };
       }
