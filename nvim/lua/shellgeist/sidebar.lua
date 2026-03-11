@@ -1,6 +1,6 @@
--- ╔═══════════════════════════════════════════════════════════════════════╗
--- ║  ShellGeist sidebar — avante-inspired chat UI                       ║
--- ╚═══════════════════════════════════════════════════════════════════════╝
+-- ╔════════════════════════════════════════════════╗
+-- ║  ShellGeist sidebar — avante-inspired chat UI  ║
+-- ╚════════════════════════════════════════════════╝
 local M = {}
 
 M.layout = nil
@@ -9,6 +9,11 @@ M.prompt = nil
 M._streaming_assistant = false
 M._streaming_thinking = false
 M._current_status = "request"
+M._pending_actions = {}
+M._context_root = nil
+M._context_mode = nil
+M._draft_response_start = nil
+M._draft_response_id = nil
 
 local chat_ns = vim.api.nvim_create_namespace("shellgeist_chat")
 local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
@@ -53,38 +58,40 @@ end
 local function define_highlights()
   local hl = vim.api.nvim_set_hl
   -- Chrome
-  hl(0, "SGBorder",       { fg = "#3b82f6", ctermfg = 69 })
-  hl(0, "SGTitle",        { fg = "#1e222a", bg = "#98c379", ctermfg = 235, ctermbg = 114, bold = true })
+  hl(0, "SGBorder",       { fg = "#5ea1ff", ctermfg = 75, bold = true })
+  hl(0, "SGTitle",        { fg = "#11161c", bg = "#8bd5a0", ctermfg = 233, ctermbg = 114, bold = true })
   -- User: header "󰀄 User" only in blue; body stays default
-  hl(0, "SGUser",         { fg = "#61afef", ctermfg = 75, bold = true })
-  hl(0, "SGUserBody",     { fg = "#e0e0e0", ctermfg = 253 })
+  hl(0, "SGUser",         { fg = "#4fa3ff", ctermfg = 75, bold = true })
+  hl(0, "SGUserBody",     { fg = "#d7ecff", ctermfg = 195 })
   -- Response / Assistant: header uses Nerd Font robot icon; body stays default
-  hl(0, "SGResponse",     { fg = "#7f848e", ctermfg = 243, bold = true })
-  hl(0, "SGResponseBody", { fg = "#e0e0e0", ctermfg = 253 })
+  hl(0, "SGResponse",     { fg = "#7f93ad", ctermfg = 109, bold = true })
+  hl(0, "SGResponseBody", { fg = "#e8edf3", ctermfg = 254 })
   -- Thinking
-  hl(0, "SGThinking",     { fg = "#7f848e", ctermfg = 243, italic = true })
+  hl(0, "SGThinking",     { fg = "#a6accd", ctermfg = 146, italic = true })
+  hl(0, "SGRunning",      { fg = "#58a6ff", ctermfg = 75, bold = true })
   -- Tool cards
-  hl(0, "SGCardBorder",   { fg = "#5c6370", ctermfg = 241 })
-  hl(0, "SGCardAction",   { fg = "#1e222a", bg = "#56b6c2", ctermfg = 235, ctermbg = 73, bold = true })
-  hl(0, "SGCardCode",     { fg = "#1e222a", bg = "#61afef", ctermfg = 235, ctermbg = 75, bold = true })
-  hl(0, "SGCardResult",   { fg = "#1e222a", bg = "#d19a66", ctermfg = 235, ctermbg = 173, bold = true })
-  hl(0, "SGCardError",    { fg = "#1e222a", bg = "#e06c75", ctermfg = 235, ctermbg = 168, bold = true })
-  hl(0, "SGCardBody",     { fg = "#abb2bf", ctermfg = 249 })
+  hl(0, "SGCardBorder",   { fg = "#6b7280", ctermfg = 244 })
+  hl(0, "SGCardAction",   { fg = "#f3f4f6", bg = "#4b5563", ctermfg = 255, ctermbg = 240, bold = true })
+  hl(0, "SGCardCode",     { fg = "#f3f4f6", bg = "#4b5563", ctermfg = 255, ctermbg = 240, bold = true })
+  hl(0, "SGCardResult",   { fg = "#f3f4f6", bg = "#4b5563", ctermfg = 255, ctermbg = 240, bold = true })
+  hl(0, "SGCardError",    { fg = "#f3f4f6", bg = "#4b5563", ctermfg = 255, ctermbg = 240, bold = true })
+  hl(0, "SGCardInfo",     { fg = "#f3f4f6", bg = "#4b5563", ctermfg = 255, ctermbg = 240, bold = true })
+  hl(0, "SGCardBody",     { fg = "#e5e9f0", ctermfg = 255 })
   -- Diff inline
-  hl(0, "SGDiffAdd",      { fg = "#98c379", bg = "#2a3a2a", ctermfg = 114, ctermbg = 22 })
-  hl(0, "SGDiffDel",      { fg = "#e06c75", bg = "#3a2a2a", ctermfg = 168, ctermbg = 52 })
-  hl(0, "SGDiffHdr",      { fg = "#56b6c2", ctermfg = 73, bold = true })
+  hl(0, "SGDiffAdd",      { fg = "#8bd5a0", bg = "#203124", ctermfg = 114, ctermbg = 22 })
+  hl(0, "SGDiffDel",      { fg = "#ff8ba7", bg = "#351f28", ctermfg = 204, ctermbg = 52 })
+  hl(0, "SGDiffHdr",      { fg = "#7dcfff", ctermfg = 117, bold = true })
   -- Success
-  hl(0, "SGSuccess",      { fg = "#98c379", ctermfg = 114, bold = true })
+  hl(0, "SGSuccess",      { fg = "#8bd5a0", ctermfg = 114, bold = true })
   -- Error
-  hl(0, "SGError",        { fg = "#e06c75", ctermfg = 168, bold = true })
+  hl(0, "SGError",        { fg = "#ff7a90", ctermfg = 204, bold = true })
   -- Spinner
-  hl(0, "SGSpinner",      { fg = "#c678dd", ctermfg = 176, bold = true })
+  hl(0, "SGSpinner",      { fg = "#c792ea", ctermfg = 176, bold = true })
   -- Approval prompt
-  hl(0, "SGApproval",     { fg = "#1e222a", bg = "#e5c07b", ctermfg = 235, ctermbg = 180, bold = true })
-  hl(0, "SGApprovalKey",  { fg = "#e5c07b", ctermfg = 180, bold = true })
+  hl(0, "SGApproval",     { fg = "#11161c", bg = "#ffd166", ctermfg = 233, ctermbg = 221, bold = true })
+  hl(0, "SGApprovalKey",  { fg = "#ffd166", ctermfg = 221, bold = true })
   -- Body default
-  hl(0, "SGBody",         { fg = "#abb2bf", ctermfg = 249 })
+  hl(0, "SGBody",         { fg = "#d8dee9", ctermfg = 253 })
 end
 
 -- Re-apply highlights when colorscheme changes (Neovim clears them)
@@ -134,6 +141,28 @@ local function scroll_bottom()
     local ok, n = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
     if ok then pcall(vim.api.nvim_win_set_cursor, w, { n, 0 }) end
   end, 50)
+end
+
+local function clear_draft_response()
+  if not M.chat or not buf_valid(M.chat.bufnr) then
+    M._streaming_assistant = false
+    M._draft_response_start = nil
+    M._draft_response_id = nil
+    return
+  end
+  if M._draft_response_start == nil then
+    M._streaming_assistant = false
+    M._draft_response_id = nil
+    return
+  end
+  local ok, line_count = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
+  if ok and line_count >= M._draft_response_start then
+    pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, M._draft_response_start, line_count, false, {})
+  end
+  M._streaming_assistant = false
+  M._draft_response_start = nil
+  M._draft_response_id = nil
+  scroll_bottom()
 end
 
 -- ── card builder (avante-style box-drawing) ────────────────────────────
@@ -206,10 +235,64 @@ local function render_user(text)
 end
 
 --- Returns true if s contains only <tool_use>...</tool_use> and whitespace (no visible prose).
+local function json_looks_like_tool_payload(obj)
+  if type(obj) == "table" then
+    if type(obj[1]) ~= "nil" then
+      for _, item in ipairs(obj) do
+        if not json_looks_like_tool_payload(item) then return false end
+      end
+      return #obj > 0
+    end
+    if type(obj.tool_use) == "table" then
+      return json_looks_like_tool_payload(obj.tool_use)
+    end
+    if type(obj.tool_use) == "string" then
+      return true
+    end
+    if type(obj.name) == "string" or type(obj.tool_name) == "string" or type(obj.tool) == "string" or type(obj.action) == "string" then
+      return true
+    end
+    for k, _ in pairs(obj) do
+      if type(k) == "string" and (k == "write_file" or k == "read_file" or k == "edit_file" or k == "run_shell" or k == "exec_shell_session" or k == "list_files") then
+        return true
+      end
+    end
+  end
+  return false
+end
+
 local function content_is_only_tool_use(s)
   if not s or s == "" then return true end
-  local stripped = s:gsub("<tool_use>[%s%S]-</tool_use>", ""):gsub("%s+", " "):gsub("^%s*", ""):gsub("%s*$", "")
-  return stripped == ""
+  local t = sanitize(s)
+  -- Hide status-only trailers in assistant text blocks.
+  t = t:gsub("\n?%s*Status:%s*DONE[^\n]*", "")
+  t = t:gsub("\n?%s*Status:%s*FAILED[^\n]*", "")
+  -- XML tool payloads
+  local stripped = t:gsub("<tool_use>[%s%S]-</tool_use>", "")
+  stripped = stripped:gsub("%s+", " "):gsub("^%s*", ""):gsub("%s*$", "")
+  if stripped == "" then return true end
+
+  -- JSON fenced payloads (```json {name,arguments} ```)
+  local invalid = false
+  stripped = t:gsub("```json%s*(.-)%s*```", function(block)
+    local ok, obj = pcall(vim.json.decode, block)
+    if ok and json_looks_like_tool_payload(obj) then
+      return ""
+    end
+    invalid = true
+    return block
+  end)
+  if not invalid then
+    stripped = stripped:gsub("%s+", " "):gsub("^%s*", ""):gsub("%s*$", "")
+    if stripped == "" then return true end
+  end
+
+  -- Bare JSON payloads
+  local ok, obj = pcall(vim.json.decode, t)
+  if ok and json_looks_like_tool_payload(obj) then
+    return true
+  end
+  return false
 end
 
 --- Strip Status: DONE / Status: FAILED lines and trailing status from text (hidden in UI).
@@ -269,13 +352,20 @@ local function render_action(text, meta)
   local file = (meta and meta.file) or ""
   local label = tool
   if file ~= "" then label = label .. " " .. file end
-  -- Compact inline: single dimmed line
+  -- Compact inline with pending state; observation will update this line to success/error.
   local desc = compact(text, 120)
   desc = desc:gsub("^Calling:%s*", "")
-  local line = "  → " .. label
-  if desc ~= "" and desc ~= tool then line = line .. "  " .. desc end
+  local line = "  → " .. label .. "  Running..."
+  if desc ~= "" and desc ~= tool then line = "  → " .. label .. "  Running...  " .. desc end
   local start = buf_append({ line })
-  if start then hl_range(start, 1, "SGThinking") end
+  if start then
+    hl_range(start, 1, "SGRunning")
+    table.insert(M._pending_actions, {
+      line = start,
+      tool = tool,
+      label = label,
+    })
+  end
   scroll_bottom()
 end
 
@@ -346,20 +436,179 @@ local function strip_ansi(text)
   return (text:gsub("\27%[[%d;]*[a-zA-Z]", ""):gsub("\27%[%?%d;]*[a-zA-Z]", ""):gsub("\27%[=%%]?[^a-zA-Z]*[a-zA-Z]", ""))
 end
 
+local function normalize_terminal_chunk(text)
+  if not text then return "" end
+  local s = strip_ansi(text)
+  -- Some terminal emitters lose ESC byte and leave raw CSI-like fragments.
+  -- Remove these residual control patterns too (e.g. "[H[2J[3J").
+  s = s:gsub("%[[%d;?]*[A-Za-z]", "")
+  -- Terminal streams frequently use carriage returns for in-place redraw.
+  -- Convert to line breaks so chunks remain visible in the sidebar.
+  s = s:gsub("\r", "\n")
+  -- Collapse very long blank runs to keep the card compact.
+  s = s:gsub("\n\n\n+", "\n\n")
+  return s
+end
+
+local function render_terminal_card(title, body, max_lines, empty_placeholder, title_group, keep_tail)
+  local content = body or ""
+  if vim.trim(content) == "" then
+    content = empty_placeholder or "…"
+  end
+  local body_lines = vim.split(content, "\n", { plain = true })
+  if max_lines and #body_lines > max_lines then
+    local trimmed = {}
+    if keep_tail == false then
+      for i = 1, max_lines do
+        table.insert(trimmed, body_lines[i])
+      end
+    else
+      for i = #body_lines - max_lines + 1, #body_lines do
+        table.insert(trimmed, body_lines[i])
+      end
+    end
+    body_lines = trimmed
+  end
+  local card = build_card(title, body_lines, 0)
+  local start = buf_append(card)
+  if start then
+    hl_range(start, 1, title_group or "SGCardResult")
+    hl_range(start + #card - 1, 1, "SGCardBorder")
+    for i = 2, #card - 1 do
+      local line_idx = start + i - 1
+      hl_partial(line_idx, 0, 4, "SGCardBorder")
+      hl_partial(line_idx, 4, -1, "SGCardBody")
+    end
+  end
+  buf_append({ "" })
+  scroll_bottom()
+end
+
+local function update_header_context(root, mode)
+  if root and root ~= "" then M._context_root = root end
+  if mode and mode ~= "" then M._context_mode = mode end
+  if not M.chat or not buf_valid(M.chat.bufnr) then return end
+
+  local ok_get, lines = pcall(vim.api.nvim_buf_get_lines, M.chat.bufnr, 0, -1, false)
+  if not ok_get or not lines or #lines == 0 then return end
+  local root_line, mode_line = nil, nil
+  for i, ln in ipairs(lines) do
+    if not root_line and ln:match("^%s*root:%s+") then root_line = i end
+    if not mode_line and ln:match("^%s*mode:%s+") then mode_line = i end
+    if root_line and mode_line then break end
+  end
+  if root_line then
+    pcall(
+      vim.api.nvim_buf_set_lines,
+      M.chat.bufnr,
+      root_line - 1,
+      root_line,
+      false,
+      { string.format("  root:    %s", M._context_root or "(unknown root)") }
+    )
+  end
+  if mode_line then
+    pcall(
+      vim.api.nvim_buf_set_lines,
+      M.chat.bufnr,
+      mode_line - 1,
+      mode_line,
+      false,
+      { string.format("  mode:    %s", M._context_mode or "auto") }
+    )
+  end
+end
+
 local function render_observation(text, meta)
   local raw = sanitize(text)
-  raw = strip_ansi(raw)
+  local tool_name = (meta and meta.tool) or ""
+  raw = (tool_name == "read_shell_session") and normalize_terminal_chunk(raw) or strip_ansi(raw)
   local is_diff = is_diff_content(raw)
   -- Explicit success/failure from backend takes precedence over content heuristics
   local meta_success = (meta and meta.success ~= nil) and meta.success
-  local is_err = (meta_success == false)
-      or raw:lower():find("^error") ~= nil
-      or raw:lower():find("validation failed") ~= nil
-      or raw:lower():find("directory not found") ~= nil
-      or raw:lower():find("file not found") ~= nil
-      or raw:lower():find("access denied") ~= nil
-      or raw:lower():find("blocked_") ~= nil
-  local is_succ = (meta_success == true) or (meta_success ~= false and is_success_line(raw))
+  local is_err
+  if meta_success ~= nil then
+    is_err = (meta_success == false)
+  else
+    is_err = raw:lower():find("^error") ~= nil
+        or raw:lower():find("validation failed") ~= nil
+        or raw:lower():find("directory not found") ~= nil
+        or raw:lower():find("file not found") ~= nil
+        or raw:lower():find("access denied") ~= nil
+        or raw:lower():find("blocked_") ~= nil
+  end
+  local is_succ = (meta_success == true) or (meta_success == nil and is_success_line(raw))
+
+  -- Update pending action line first (gray -> green/red).
+  local pending_idx, pending = nil, nil
+  for i, entry in ipairs(M._pending_actions) do
+    if tool_name ~= "" and entry.tool == tool_name then
+      pending_idx = i
+      pending = entry
+      break
+    end
+  end
+  if pending and pending_idx then
+    table.remove(M._pending_actions, pending_idx)
+    local summary = is_err and "KO" or "OK"
+    local line = (is_err and "  ✗ " or "  ✓ ") .. pending.label .. "  " .. summary
+    pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, pending.line, pending.line + 1, false, { line })
+    hl_range(pending.line, 1, "SGCardBody")
+    local symbol = is_err and "✗" or "✓"
+    local symbol_col = line:find(symbol, 1, true)
+    if symbol_col then
+      hl_partial(pending.line, symbol_col - 1, symbol_col - 1 + #symbol, is_err and "SGError" or "SGSuccess")
+    end
+    local ok_col = line:find(summary, 1, true)
+    if ok_col then
+      hl_partial(pending.line, ok_col - 1, ok_col - 1 + #summary, is_err and "SGError" or "SGSuccess")
+    end
+    -- For short result lines, avoid duplicate "→ ... + Success" noise.
+    local short = vim.split(raw, "\n", { plain = true })
+    if #short <= 2
+      and tool_name ~= "read_shell_session"
+      and tool_name ~= "run_shell"
+      and tool_name ~= "exec_shell_session"
+      and tool_name ~= "list_files"
+      and tool_name ~= "read_file"
+      and not is_err
+    then
+      scroll_bottom()
+      return
+    end
+  end
+
+  -- Always render a compact live terminal card for PTY read chunks.
+  if tool_name == "read_shell_session" then
+    render_terminal_card("Terminal live", raw, 20, "… (en attente de sortie)", "SGCardInfo")
+    return
+  end
+
+  -- Also render shell command output in a small terminal card, even for short output.
+  if tool_name == "run_shell" or tool_name == "exec_shell_session" then
+    render_terminal_card("Terminal output", raw, 16, "… (aucune sortie)", "SGCardInfo")
+    return
+  end
+
+  if tool_name == "list_files" then
+    render_terminal_card("Directory listing", raw, 16, "… (aucun élément)", "SGCardInfo", false)
+    return
+  end
+
+  if tool_name == "get_repo_map" then
+    render_terminal_card("Repository map", raw, 24, "… (aucune carte du repo)", "SGCardInfo", false)
+    return
+  end
+
+  if tool_name == "read_file" then
+    render_terminal_card(is_err and "Read error" or "File contents", raw, 20, "… (fichier vide)", is_err and "SGCardError" or "SGCardInfo", false)
+    return
+  end
+
+  if is_err then
+    render_terminal_card("Tool error", raw, 12, "…", "SGCardError")
+    return
+  end
 
   -- For diffs: show a clear "Diff" card (---/+++/@@) with green/red; box height = full diff (no cap)
   if is_diff then
@@ -1012,8 +1261,8 @@ function M.render_welcome()
   local ok_sg, sg = pcall(require, "shellgeist")
   if ok_sg and sg and type(sg.get_last_context) == "function" then
     local ctx = sg.get_last_context() or {}
-    local root = ctx.root or "(unknown root)"
-    local mode = ctx.mode or "auto"
+    local root = M._context_root or ctx.root or "(unknown root)"
+    local mode = M._context_mode or ctx.mode or "auto"
     table.insert(lines, string.format("  root:    %s", root))
     table.insert(lines, string.format("  mode:    %s", mode))
   end
@@ -1049,6 +1298,7 @@ function M.append_text(text, msg_type, meta)
   if not M.chat or not buf_valid(M.chat.bufnr) then return end
   text = sanitize(text)
   meta = type(meta) == "table" and meta or {}
+  update_header_context(meta.root, meta.mode)
 
   -- ── streaming thinking chunks ──
   if msg_type == "thinking_chunk" then
@@ -1082,7 +1332,51 @@ function M.append_text(text, msg_type, meta)
     return
   end
 
-  -- ── streaming response chunks ──
+  -- ── streaming draft response chunks ──
+  if msg_type == "response_draft_chunk" then
+    -- End thinking stream if active
+    if M._streaming_thinking then
+      M._streaming_thinking = false
+      buf_append({ "" })
+    end
+    local chunk = text
+    if chunk == "" then return end
+    local is_first = not M._streaming_assistant
+    if is_first then
+      M._streaming_assistant = true
+      M._draft_response_id = meta and meta.draft_id or nil
+      local hdr = buf_append({ _assistant_header })
+      if hdr then hl_range(hdr, 1, "SGResponse") end
+      M._draft_response_start = hdr or nil
+      buf_append({ "" })  -- content starts on new line
+    end
+    local ok_count, line_count = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
+    if not ok_count then return end
+    local last_idx = line_count - 1
+    local ok_last, last_lines = pcall(vim.api.nvim_buf_get_lines, M.chat.bufnr, last_idx, last_idx + 1, false)
+    if not ok_last then return end
+    local last_line = (last_lines and last_lines[1]) or ""
+    local nl = chunk:find("\n", 1, true)
+    if nl then
+      pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_idx, last_idx + 1, false, { last_line .. chunk:sub(1, nl - 1) })
+      hl_range(last_idx, 1, "SGResponseBody")
+      local new_lines = vim.split(chunk:sub(nl + 1), "\n", { plain = true })
+      local new_start = buf_append(new_lines)
+      if new_start then hl_range(new_start, #new_lines, "SGResponseBody") end
+    else
+      pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_idx, last_idx + 1, false, { last_line .. chunk })
+      hl_range(last_idx, 1, "SGResponseBody")
+    end
+    scroll_bottom()
+    return
+  end
+
+  if msg_type == "response_discard" then
+    clear_draft_response()
+    return
+  end
+
+  -- ── legacy streaming response chunks ──
   if msg_type == "assistant_chunk" or msg_type == "response_chunk" then
     -- End thinking stream if active
     if M._streaming_thinking then
@@ -1121,29 +1415,37 @@ function M.append_text(text, msg_type, meta)
 
   -- Any non-chunk type ends streaming
   if M._streaming_assistant then
-    M._streaming_assistant = false
-    -- If the streamed content was only <tool_use>...</tool_use>, remove that block (keep tools active but hidden)
-    local ok, line_count = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
-    if ok and line_count >= 1 then
-      local ok_get, line_list = pcall(vim.api.nvim_buf_get_lines, M.chat.bufnr, 0, line_count, false)
-      if ok_get and line_list and #line_list >= 1 then
-        local last_assistant_idx = nil
-        for i = line_count, 1, -1 do
-          if (line_list[i] or ""):find(_assistant_header) then
-            last_assistant_idx = i
-            break
+    if M._draft_response_start ~= nil then
+      -- Draft responses are explicitly committed/discarded by runtime events.
+    else
+      M._streaming_assistant = false
+      -- If the streamed content was only <tool_use>...</tool_use>, remove that block (keep tools active but hidden)
+      local ok, line_count = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
+      if ok and line_count >= 1 then
+        local ok_get, line_list = pcall(vim.api.nvim_buf_get_lines, M.chat.bufnr, 0, line_count, false)
+        if ok_get and line_list and #line_list >= 1 then
+          local last_assistant_idx = nil
+          for i = line_count, 1, -1 do
+            if (line_list[i] or ""):find(_assistant_header) then
+              last_assistant_idx = i
+              break
+            end
           end
-        end
-        if last_assistant_idx and last_assistant_idx < line_count then
-          local content_lines = {}
-          for j = last_assistant_idx + 1, line_count do
-            table.insert(content_lines, line_list[j] or "")
-          end
-          local content = table.concat(content_lines, "\n")
-          if content_is_only_tool_use(content) then
-            pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_assistant_idx - 1, line_count, false, {})
-            scroll_bottom()
-            -- fall through to dispatch (do not add separator)
+          if last_assistant_idx and last_assistant_idx < line_count then
+            local content_lines = {}
+            for j = last_assistant_idx + 1, line_count do
+              table.insert(content_lines, line_list[j] or "")
+            end
+            local content = table.concat(content_lines, "\n")
+            if content_is_only_tool_use(content) then
+              pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_assistant_idx - 1, line_count, false, {})
+              scroll_bottom()
+              -- fall through to dispatch (do not add separator)
+            else
+              local sep = buf_append({ "───────────────────────────────────────────" })
+              if sep then hl_range(sep, 1, "SGCardBorder") end
+              buf_append({ "" })
+            end
           else
             local sep = buf_append({ "───────────────────────────────────────────" })
             if sep then hl_range(sep, 1, "SGCardBorder") end
@@ -1159,10 +1461,6 @@ function M.append_text(text, msg_type, meta)
         if sep then hl_range(sep, 1, "SGCardBorder") end
         buf_append({ "" })
       end
-    else
-      local sep = buf_append({ "───────────────────────────────────────────" })
-      if sep then hl_range(sep, 1, "SGCardBorder") end
-      buf_append({ "" })
     end
   end
   if M._streaming_thinking then
@@ -1180,6 +1478,9 @@ function M.append_text(text, msg_type, meta)
   if msg_type == "user" then
     render_user(text)
   elseif msg_type == "assistant" or msg_type == "response" then
+    if M._draft_response_start ~= nil then
+      clear_draft_response()
+    end
     -- When this is the final response after streaming, replace the streamed block instead of adding a duplicate
     if meta.final and M.chat and buf_valid(M.chat.bufnr) then
       local ok, line_count = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)

@@ -1,10 +1,11 @@
-"""Session management: persistence, history loading, and repair."""
+"""Session management: persistence, history loading, repair, and turn state."""
 from __future__ import annotations
 
 import json
 import os
 import sqlite3
 from dataclasses import dataclass
+from uuid import uuid4
 from typing import Any
 
 from shellgeist.config import history_db_path
@@ -145,6 +146,66 @@ def append_user_goal_once(
     history.append({"role": "user", "content": goal})
     save_message(session_id, "user", goal)
     return True
+
+
+@dataclass
+class TurnState:
+    """Structured runtime state for a single agent turn."""
+
+    goal: str
+    session_id: str
+    intent_family: str = "general"
+    strict_target: str | None = None
+    strict_target_rel: str = ""
+    stdlib_only_required: bool = False
+    requested_commands: list[str] | None = None
+    completed_commands: set[str] | None = None
+    repair_budget: int = 0
+    repair_attempts: int = 0
+    exact_content_expected: str | None = None
+    exact_content_satisfied: bool = True
+    exact_content_denials: int = 0
+    target_written: bool = False
+    failed_validation_command: str | None = None
+    repair_reads: int = 0
+    repair_rewritten: bool = False
+    last_valid_observation: str = ""
+    last_tool_name: str | None = None
+    last_tool_success: bool = False
+    draft_response_id: str = ""
+    draft_response_visible: bool = False
+    deterministic_tool_calls: list[dict[str, Any]] | None = None
+
+    def __post_init__(self) -> None:
+        if self.requested_commands is None:
+            self.requested_commands = []
+        if self.completed_commands is None:
+            self.completed_commands = set()
+        if not self.draft_response_id:
+            self.draft_response_id = f"{self.session_id}:{uuid4().hex}"
+        if self.exact_content_expected is not None:
+            self.exact_content_satisfied = False
+
+    def next_requested_command(self) -> str | None:
+        for cmd in self.requested_commands:
+            if cmd not in self.completed_commands:
+                return cmd
+        return None
+
+    def mark_requested_command_completed(self, command: str) -> None:
+        if command:
+            self.completed_commands.add(command)
+
+    def mark_tool_result(self, tool_name: str, observation: str, success: bool) -> None:
+        self.last_tool_name = tool_name
+        self.last_tool_success = success
+        if observation and success:
+            self.last_valid_observation = observation
+
+    def can_finalize_strict(self) -> bool:
+        if not self.strict_target or not self.target_written or not self.exact_content_satisfied:
+            return False
+        return all(cmd in self.completed_commands for cmd in self.requested_commands)
 
 
 # ---------------------------------------------------------------------------

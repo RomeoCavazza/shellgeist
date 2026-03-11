@@ -9,14 +9,13 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from shellgeist.tools.base import registry
-from shellgeist.runtime.paths import read_repo_file, resolve_repo_path
-
-# Directories always excluded from recursive listings / searches
-_IGNORED_DIRS = frozenset({
-    ".git", "__pycache__", "node_modules", ".venv", "venv",
-    ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
-    "dist", "build", ".eggs", "target",
-})
+from shellgeist.runtime.paths import (
+    DEFAULT_IGNORED_DIRS,
+    read_repo_file,
+    resolve_existing_repo_file,
+    resolve_repo_path,
+    workspace_relative_path,
+)
 
 
 from pydantic import BaseModel, ConfigDict
@@ -39,12 +38,14 @@ class ListFilesInput(BaseModel):
 )
 def read_file(path: str | None = None, root: str = "", file_path: str | None = None, file: str | None = None, **kwargs: Any) -> str:
     target = (path or file or file_path or "").strip()
-    p = resolve_repo_path(Path(root), target)
-    if not p.exists():
-        hint = f" Hint: try a relative path like '{Path(target).name}' instead." if target.startswith("/") else ""
-        if not hint and ("/" in target or "Bureau" in target or target.count(os.sep) > 1):
-            hint = " Use a path relative to project root, e.g. README.md or backend/main.py."
-        raise FileNotFoundError(f"File not found: {target}.{hint}")
+    try:
+        resolution = resolve_existing_repo_file(Path(root), target, ignored_dirs=DEFAULT_IGNORED_DIRS)
+        p = resolution.path
+    except FileNotFoundError as exc:
+        if target.startswith("/"):
+            detail = f"{exc} Use a path relative to project root, e.g. README.md or backend/main.py."
+            raise FileNotFoundError(detail) from None
+        raise
     return read_repo_file(p)
 
 
@@ -67,7 +68,7 @@ def get_repo_map(root: str, **kwargs: Any) -> str:
         # Prune hidden and ignored dirs in-place
         dirnames[:] = sorted(
             d for d in dirnames
-            if not d.startswith(".") and d not in _IGNORED_DIRS
+            if not d.startswith(".") and d not in DEFAULT_IGNORED_DIRS
         )
         rel_dir = os.path.relpath(dirpath, p_root)
         depth = 0 if rel_dir == "." else rel_dir.count(os.sep) + 1
@@ -152,14 +153,13 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
     input_model=ListFilesInput
 )
 def list_files(directory: str = ".", root: str = "", recursive: bool = False, depth: int = 3, max_results: int = 100, **kwargs: Any) -> list[str]:
-    p = resolve_repo_path(Path(root), directory)
+    root_path = Path(root).resolve()
+    p = resolve_repo_path(root_path, directory)
 
     if not p.exists() or not p.is_dir():
         hint = f" Hint: try a relative path like '{Path(directory).name}' instead." if directory.startswith("/") else ""
         raise FileNotFoundError(f"Directory not found: {directory}.{hint}")
 
-    # Use the resolved directory as base for relative paths
-    base = str(p)
     items: list[str] = []
 
     if recursive:
@@ -173,9 +173,9 @@ def list_files(directory: str = ".", root: str = "", recursive: bool = False, de
             for entry in entries:
                 if len(items) >= max_results:
                     break
-                if entry.name.startswith(".") or entry.name in _IGNORED_DIRS:
+                if entry.name.startswith(".") or entry.name in DEFAULT_IGNORED_DIRS:
                     continue
-                rel = os.path.relpath(entry.path, base)
+                rel = workspace_relative_path(root_path, Path(entry.path))
                 if entry.is_dir():
                     items.append(rel + "/")
                     _walk(Path(entry.path), current_depth + 1)
@@ -186,7 +186,7 @@ def list_files(directory: str = ".", root: str = "", recursive: bool = False, de
         for entry in os.scandir(p):
             if entry.name.startswith("."):
                 continue
-            rel = os.path.relpath(entry.path, base)
+            rel = workspace_relative_path(root_path, Path(entry.path))
             items.append(rel + "/" if entry.is_dir() else rel)
 
     return sorted(items)
@@ -207,23 +207,22 @@ class FindFilesInput(BaseModel):
     input_model=FindFilesInput
 )
 def find_files(pattern: str, directory: str = ".", root: str = "", max_results: int = 50, **kwargs: Any) -> str | list[str]:
-    p = resolve_repo_path(Path(root), directory)
+    root_path = Path(root).resolve()
+    p = resolve_repo_path(root_path, directory)
     if not p.exists() or not p.is_dir():
         raise FileNotFoundError(f"Directory not found: {directory}")
 
     results: list[str] = []
-    base = str(p)
-
     for dirpath, dirnames, filenames in os.walk(p):
         # Prune ignored directories in-place
         dirnames[:] = [
             d for d in dirnames
-            if not d.startswith(".") and d not in _IGNORED_DIRS
+            if not d.startswith(".") and d not in DEFAULT_IGNORED_DIRS
         ]
         for filename in filenames:
             if filename.startswith("."):
                 continue
-            rel = os.path.relpath(os.path.join(dirpath, filename), base)
+            rel = workspace_relative_path(root_path, Path(dirpath) / filename)
             if fnmatch.fnmatch(filename, pattern) or fnmatch.fnmatch(rel, pattern):
                 results.append(rel)
                 if len(results) >= max_results:

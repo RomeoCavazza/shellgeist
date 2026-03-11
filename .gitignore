@@ -23,3 +23,8 @@ test_bin/
 .DS_Store
 *.swp
 *.swo
+
+# local / test artifacts (do not commit)
+.shellgeist.sh
+cube.py
+ping.py

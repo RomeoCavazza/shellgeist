@@ -30,6 +30,10 @@ _MD_TOOL_RE = re.compile(
     r"```\s*tool_use\s*\n(.*?)```",
     re.DOTALL | re.IGNORECASE,
 )
+_CANONICAL_TOOL_RE = re.compile(
+    r"<tool_use>\s*(\{.*?\})\s*</tool_use>",
+    re.DOTALL,
+)
 # Extract name="..." from tag attributes
 _ATTR_NAME_RE = re.compile(r'name\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
 # XML-like body: <name>tool_name</name> and/or <arguments>...</arguments> or <parameters>...</parameters>
@@ -56,6 +60,14 @@ _WRITE_FILE_CONTENT_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _ONE_QUOTED_STR = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+_TOOL_NAME_ALIASES: dict[str, str] = {
+    "run_in_subshell": "run_shell",
+    "runinsubshell": "run_shell",
+    "run_python_command": "run_shell",
+    "runpythoncommand": "run_shell",
+    "cat": "read_file",
+}
 
 
 def _wrap_bare_json(text: str) -> str:
@@ -210,16 +222,83 @@ def parse_xml_tool_use(
     return _normalize_calls(calls)
 
 
+def parse_canonical_tool_use(text: str) -> list[dict[str, Any]]:
+    """Parse only the canonical <tool_use>{json}</tool_use> format.
+
+    This is the nominal contract expected from the model. More permissive
+    parsers remain available as compatibility fallbacks.
+    """
+    calls: list[dict[str, Any]] = []
+    for match in _CANONICAL_TOOL_RE.finditer(text or ""):
+        body = match.group(1).strip()
+        try:
+            obj = loads_obj(body)
+        except Exception:
+            continue
+        normalized = _normalize_calls([obj] if isinstance(obj, dict) else [])
+        for call in normalized:
+            if isinstance(call, dict) and isinstance(call.get("name"), str):
+                calls.append(call)
+    return calls
+
+
 def _normalize_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Ensure each call has name and arguments keys."""
     out = []
     for c in calls:
         if not isinstance(c, dict):
             continue
-        name = c.get("name")
+        name = c.get("name") or c.get("tool_name") or c.get("tool") or c.get("action")
+        if not name:
+            handled_shorthand = False
+            for k, v in c.items():
+                mapped = _TOOL_NAME_ALIASES.get(str(k).lower())
+                if not mapped:
+                    continue
+                if isinstance(v, dict):
+                    out.append({"name": mapped, "arguments": v})
+                    handled_shorthand = True
+                elif isinstance(v, str):
+                    if mapped == "read_file":
+                        out.append({"name": mapped, "arguments": {"path": v}})
+                        handled_shorthand = True
+                    elif mapped == "run_shell":
+                        out.append({"name": mapped, "arguments": {"command": v}})
+                        handled_shorthand = True
+                break
+            if handled_shorthand:
+                continue
+        if isinstance(name, str):
+            name = _TOOL_NAME_ALIASES.get(name.lower(), name)
         args = c.get("arguments")
         if args is None:
-            args = {k: v for k, v in c.items() if k not in ("name", "arguments")}
+            args = {
+                k: v for k, v in c.items()
+                if k not in ("name", "tool_name", "tool", "action", "arguments", "args", "parameters")
+            }
+        if not isinstance(args, dict):
+            args = c.get("args") or c.get("parameters") or {}
+        if not isinstance(args, dict):
+            args = {}
+        if isinstance(name, str):
+            low = name.lower()
+            if low in ("write_file", "edit_file"):
+                if "content" not in args and isinstance(args.get("contents"), str):
+                    args["content"] = args["contents"]
+                if "path" not in args:
+                    p = args.get("file_path") or args.get("filename") or args.get("file")
+                    if isinstance(p, str) and p.strip():
+                        args["path"] = p
+            elif low == "run_shell":
+                if "command" not in args:
+                    cmd = args.get("cmd") or args.get("script")
+                    if isinstance(cmd, str) and cmd.strip():
+                        args["command"] = cmd
+            elif low == "read_file":
+                if "path" not in args:
+                    p = args.get("file_path") or args.get("filename") or args.get("file")
+                    if isinstance(p, str) and p.strip():
+                        args["path"] = p
         if name:
             out.append({"name": name, "arguments": args or {}})
     return out

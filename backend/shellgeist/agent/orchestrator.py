@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from shellgeist.agent.parsing.json_utils import loads_obj
+from shellgeist.agent.parsing.parser import parse_canonical_tool_use, parse_xml_tool_use
 
 
 def is_small_talk(goal: str) -> str | None:
@@ -39,6 +40,14 @@ class NoToolDecision:
     feedback: str | None = None
 
 
+@dataclass
+class ModelTurnClassification:
+    kind: str  # tool_batch | none
+    tool_calls: list[dict[str, Any]]
+    canonical: bool = False
+    used_fallback: bool = False
+
+
 # ── Plaintext tool call detection ───────────────────────────────────────
 # 7B models sometimes output tool calls as plain text instead of XML tags.
 # E.g. "ShellCommandInput: {"command": "ls"}" or "I'll use run_shell: {"command": "ls"}"
@@ -65,6 +74,11 @@ _CLASS_TO_TOOL: dict[str, str] = {
     "start_shell_session": "start_shell_session",
     "exec_shell_session": "exec_shell_session",
     "run_nix_python": "run_nix_python",
+    "run_python_command": "run_shell",
+    "runpythoncommand": "run_shell",
+    "run_in_subshell": "run_shell",
+    "runinsubshell": "run_shell",
+    "cat": "read_file",
 }
 
 # Pattern: ToolName: { json } or ToolName({ json }) or I'll call tool_name: { json }
@@ -76,6 +90,78 @@ _PLAINTEXT_TOOL_RE = re.compile(
     r'(\{[^}]*\})',                           # JSON body
     re.IGNORECASE | re.DOTALL,
 )
+
+
+def _normalize_tool_payload(obj: Any) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    if isinstance(obj, list):
+        for item in obj:
+            calls.extend(_normalize_tool_payload(item))
+        return calls
+    if not isinstance(obj, dict):
+        return calls
+
+    # Wrapped payload: {"tool_use": {...}} or {"tool_use": [{...}]}
+    if "tool_use" in obj:
+        tu = obj.get("tool_use")
+        if isinstance(tu, (dict, list)):
+            calls.extend(_normalize_tool_payload(tu))
+            if calls:
+                return calls
+        elif isinstance(tu, str):
+            mapped = _CLASS_TO_TOOL.get(tu.lower())
+            if mapped:
+                args = {k: v for k, v in obj.items() if k != "tool_use"}
+                calls.append({"name": mapped, "arguments": args})
+                return calls
+
+    # Canonical payload: {"name":"write_file","arguments":{...}}
+    name = obj.get("name") or obj.get("tool_name") or obj.get("tool") or obj.get("action")
+    if isinstance(name, str):
+        tool_name = _CLASS_TO_TOOL.get(name.lower())
+        if tool_name:
+            args = obj.get("arguments") or obj.get("args") or obj.get("parameters")
+            if not isinstance(args, dict):
+                args = {
+                    k: v for k, v in obj.items()
+                    if k not in ("name", "tool_name", "tool", "action", "arguments", "args", "parameters")
+                }
+            # Common natural aliases
+            if tool_name in ("write_file", "edit_file"):
+                if "content" not in args and isinstance(args.get("contents"), str):
+                    args["content"] = args["contents"]
+                if "path" not in args:
+                    p = args.get("file_path") or args.get("filename") or args.get("file")
+                    if isinstance(p, str) and p.strip():
+                        args["path"] = p
+            elif tool_name == "run_shell":
+                if "command" not in args:
+                    cmd = args.get("cmd") or args.get("script")
+                    if isinstance(cmd, str) and cmd.strip():
+                        args["command"] = cmd
+            elif tool_name == "read_file":
+                if "path" not in args:
+                    p = args.get("file_path") or args.get("filename") or args.get("file")
+                    if isinstance(p, str) and p.strip():
+                        args["path"] = p
+            calls.append({"name": tool_name, "arguments": args})
+            return calls
+
+    # Shorthand payloads:
+    # {"write_file": {...}} or {"run_shell": {"command":"..."}}
+    for k, v in obj.items():
+        mapped = _CLASS_TO_TOOL.get(str(k).lower())
+        if not mapped:
+            continue
+        if isinstance(v, dict):
+            calls.append({"name": mapped, "arguments": v})
+        elif isinstance(v, str):
+            # Natural shorthand for shell-like tools
+            if mapped in ("run_shell", "exec_shell_session"):
+                calls.append({"name": mapped, "arguments": {"command": v}})
+            elif mapped == "read_file":
+                calls.append({"name": mapped, "arguments": {"path": v}})
+    return calls
 
 
 def extract_plaintext_tool_calls(content: str) -> list[dict[str, Any]]:
@@ -102,30 +188,75 @@ def extract_plaintext_tool_calls(content: str) -> list[dict[str, Any]]:
 
     if calls: return calls
 
-    # 2. Search for any JSON block that has a "name" matching a tool
+    # 2) Try fenced JSON blocks first (often arrays of tool calls)
+    fenced_blocks = re.findall(r"```json\s*([\s\S]*?)\s*```", content, re.IGNORECASE)
+    for block in fenced_blocks:
+        try:
+            parsed = loads_obj(block)
+            calls.extend(_normalize_tool_payload(parsed))
+        except Exception:
+            continue
+    if calls:
+        return calls
+
+    # 3) Try parsing the entire message as JSON (object or array)
+    stripped = content.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            parsed = loads_obj(stripped)
+            calls.extend(_normalize_tool_payload(parsed))
+        except Exception:
+            pass
+    if calls:
+        return calls
+
+    # 4. Search for any JSON block that has a "name" matching a tool
     # Regex for finding JSON objects (simple heuristic)
     json_blocks = re.findall(r'(\{(?:[^{}]|\{[^{}]*\})*\})', content, re.DOTALL)
     for block in json_blocks:
         try:
             obj = loads_obj(block)
-            if not isinstance(obj, dict): continue
-            
-            name = obj.get("name")
-            if not isinstance(name, str): continue
-            
-            tool_name = _CLASS_TO_TOOL.get(name.lower())
-            if tool_name:
-                # Map "parameters" -> "arguments" if present
-                args = obj.get("arguments") or obj.get("parameters") or obj
-                if args == obj:
-                    # If the whole object is the tool call, remove "name" from args
-                    args = {k: v for k, v in obj.items() if k not in ("name", "parameters")}
-                
-                calls.append({"name": tool_name, "arguments": args})
+            calls.extend(_normalize_tool_payload(obj))
         except Exception:
             continue
 
     return calls
+
+
+def classify_model_turn(content: str) -> ModelTurnClassification:
+    """Classify model output using a strict nominal contract first.
+
+    The canonical format is parsed first; permissive parsers remain available
+    only as fallbacks so the runtime can progressively tighten the contract.
+    """
+    canonical_calls = parse_canonical_tool_use(content)
+    if canonical_calls:
+        return ModelTurnClassification(
+            kind="tool_batch",
+            tool_calls=canonical_calls,
+            canonical=True,
+            used_fallback=False,
+        )
+
+    xml_calls = parse_xml_tool_use(content)
+    if xml_calls:
+        return ModelTurnClassification(
+            kind="tool_batch",
+            tool_calls=xml_calls,
+            canonical=False,
+            used_fallback=True,
+        )
+
+    plaintext_calls = extract_plaintext_tool_calls(content)
+    if plaintext_calls:
+        return ModelTurnClassification(
+            kind="tool_batch",
+            tool_calls=plaintext_calls,
+            canonical=False,
+            used_fallback=True,
+        )
+
+    return ModelTurnClassification(kind="none", tool_calls=[])
 
 
 def normalize_final_response(content: str) -> str:

@@ -1,5 +1,16 @@
 <div align="center">
 
+- [Overview](#overview)
+- [Project structure](#project-structure)
+- [Architecture](#architecture)
+- [Commands](#commands)
+- [Contributing](#contributing)
+- [License](#license)
+
+</div>
+
+<div align="center">
+
 <pre>
   ██████  ██░ ██ ▓█████  ██▓     ██▓      ▄████ ▓█████  ██▓  ██████ ▄▄▄█████▓
 ▒██    ▒ ▓██░ ██▒▓█   ▀ ▓██▒    ▓██▒     ██▒ ▀█▒▓█   ▀ ▓██▒▒██    ▒ ▓  ██▒ ▓▒
@@ -49,7 +60,7 @@ Repository layout: Python backend (one package under `backend/shellgeist/`), Neo
 
 **Prerequisites:** Python 3.11+, Neovim 0.9+, [nui.nvim](https://github.com/MunifTanjim/nui.nvim) (required for the sidebar), Ollama or OpenAI-compatible API.
 
-```
+```text
 .
 ├── assets
 │   ├── ascii-logo.txt

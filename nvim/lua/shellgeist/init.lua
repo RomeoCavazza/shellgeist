@@ -21,6 +21,37 @@ local function trim(s)
   return (s:gsub("%s+$", ""))
 end
 
+local function is_unusable_root(path)
+  path = tostring(path or "")
+  if path == "" then
+    return true
+  end
+  local norm = vim.fn.fnamemodify(path, ":p")
+  local home = vim.fn.expand("~")
+  return norm == "/" or norm == home .. "/"
+end
+
+local function pick_safe_root(...)
+  for i = 1, select("#", ...) do
+    local candidate = select(i, ...)
+    if candidate and candidate ~= "" and not is_unusable_root(candidate) then
+      return candidate
+    end
+  end
+  for i = 1, select("#", ...) do
+    local candidate = select(i, ...)
+    if candidate and candidate ~= "" then
+      return candidate
+    end
+  end
+  return nil
+end
+
+local function project_path_from_plugin()
+  local plugin_path = debug.getinfo(1).source:sub(2):match("(.*/)") or ""
+  return vim.fn.fnamemodify(plugin_path .. "../../..", ":p:h")
+end
+
 local function git_root(cwd)
   local out = vim.fn.systemlist({ "git", "-C", cwd, "rev-parse", "--show-toplevel" })
   if vim.v.shell_error ~= 0 or not out or not out[1] or out[1] == "" then
@@ -29,16 +60,127 @@ local function git_root(cwd)
   return trim(out[1])
 end
 
+local function current_buffer_root()
+  local ok, buf = pcall(vim.api.nvim_get_current_buf)
+  if not ok or not buf then
+    return nil
+  end
+  local name = vim.api.nvim_buf_get_name(buf)
+  if not name or name == "" then
+    return nil
+  end
+  local abs = vim.fn.fnamemodify(name, ":p")
+  if abs == "" then
+    return nil
+  end
+  local dir = vim.fn.fnamemodify(abs, ":h")
+  if not dir or dir == "" then
+    return nil
+  end
+  return git_root(dir) or dir
+end
+
+local function root_from_goal(goal)
+  goal = tostring(goal or "")
+  if goal == "" then
+    return nil
+  end
+
+  local function nearest_existing_dir(path_abs)
+    local cur = vim.fn.fnamemodify(path_abs, ":p")
+    if cur == "" then
+      return nil
+    end
+    while cur and cur ~= "" do
+      local st = vim.loop.fs_stat(cur)
+      if st and st.type == "directory" then
+        if is_unusable_root(cur) then
+          return nil
+        end
+        return cur
+      end
+      local parent = vim.fn.fnamemodify(cur, ":h")
+      if not parent or parent == "" or parent == cur then
+        break
+      end
+      cur = parent
+    end
+    return nil
+  end
+
+  -- Extract absolute path-like tokens from user prompt and try to infer
+  -- a project root from them (file path -> parent dir -> git root).
+  for token in goal:gmatch("(/[^%s\"'`()%[%]{}<>|;:,]+)") do
+    local p = vim.fn.fnamemodify(token, ":p")
+    if p and p ~= "" then
+      local st = vim.loop.fs_stat(p)
+      local dir = nil
+      if st and st.type == "file" then
+        dir = vim.fn.fnamemodify(p, ":h")
+      elseif st and st.type == "directory" then
+        dir = p
+      elseif token:match("%.[A-Za-z0-9_]+$") then
+        -- Deterministic file-target inference even when file doesn't exist yet.
+        dir = nearest_existing_dir(vim.fn.fnamemodify(p, ":h"))
+      end
+      if dir and dir ~= "" then
+        return pick_safe_root(git_root(dir), dir)
+      end
+    end
+  end
+
+  -- Fallback: extract absolute file path even if followed by punctuation/markdown.
+  local raw_abs = goal:match("(/[^%s\"'`]+%.[A-Za-z0-9_]+)")
+  if raw_abs and raw_abs ~= "" then
+    local cleaned = raw_abs:gsub("[,.;:]+$", "")
+    local p = vim.fn.fnamemodify(cleaned, ":p")
+    if p and p ~= "" then
+      local dir = nearest_existing_dir(vim.fn.fnamemodify(p, ":h"))
+      if dir and dir ~= "" then
+        return pick_safe_root(git_root(dir), dir)
+      end
+    end
+  end
+
+  return nil
+end
+
 local function project_root()
-  local cwd = vim.loop.cwd()
-  return git_root(cwd) or cwd
+  -- Prefer the active buffer location: users often open Neovim from $HOME
+  -- while editing a file inside a project repository.
+  local from_buffer = current_buffer_root()
+  if from_buffer and from_buffer ~= "" and not is_unusable_root(from_buffer) then
+    return from_buffer
+  end
+
+  local cwd = vim.loop.cwd() or vim.fn.getcwd()
+  if cwd and cwd ~= "" then
+    local from_cwd = git_root(cwd) or cwd
+    local home = vim.fn.expand("~")
+    if is_unusable_root(from_cwd) and M._last_root and M._last_root ~= "" and not is_unusable_root(M._last_root) then
+      return M._last_root
+    end
+    if from_cwd == home and M._last_root and M._last_root ~= "" and M._last_root ~= home then
+      return M._last_root
+    end
+    if not is_unusable_root(from_cwd) then
+      return from_cwd
+    end
+  end
+
+  -- Last-resort fallback: plugin project path is safer than $HOME.
+  local from_plugin = project_path_from_plugin()
+  if from_plugin and from_plugin ~= "" and not is_unusable_root(from_plugin) then
+    return from_plugin
+  end
+  return pick_safe_root(M._last_root, from_plugin, from_buffer, cwd, vim.fn.expand("~"))
 end
 
 M._mode = "auto"  -- "auto" or "review"
 
 M._last_root = nil
 M._last_session_id = nil
-M._conversation_fresh = false  -- true when sidebar just opened: next agent_task sends fresh_conversation
+M._conversation_fresh = false  -- set true only by explicit "new conversation" action
 
 function M.setup(opts)
   M._cfg = vim.tbl_deep_extend("force", M._cfg, opts or {})
@@ -134,6 +276,12 @@ end
 
 local function ensure_daemon(cb)
   local socket = M._cfg.socket
+  local expected_project = project_path_from_plugin()
+  local function norm_path(p)
+    p = tostring(p or "")
+    if p == "" then return "" end
+    return vim.fn.fnamemodify(p, ":p:h")
+  end
   
   -- Probe the socket instead of just checking file existence
   local called = false
@@ -143,7 +291,16 @@ local function ensure_daemon(cb)
     called = true
 
     if ev.ok then
-      cb()
+      local daemon_root = nil
+      if type(ev.data) == "table" then
+        daemon_root = ev.data.repo_root
+      end
+      if norm_path(daemon_root) ~= "" and norm_path(daemon_root) == norm_path(expected_project) then
+        cb()
+      else
+        -- Connected daemon is stale or from another checkout; respawn local one.
+        M._spawn_daemon(cb)
+      end
     else
       -- If ping fails (likely ECONNREFUSED), try to spawn
       M._spawn_daemon(cb)
@@ -157,21 +314,23 @@ function M._spawn_daemon(cb)
   -- Resolve the wrapper from the plugin's own location (project root).
   -- IMPORTANT: Do NOT use PATH first — stale copies (e.g. ~/.local/bin/shellgeist)
   -- can resolve there and fail because $DIR/backend won't exist.
-  local plugin_path = debug.getinfo(1).source:sub(2):match("(.*/)") or ""
-  local project_path = vim.fn.fnamemodify(plugin_path .. "../../..", ":p:h")
-  local wrapper = project_path .. "/shellgeist"
-  
-  -- Fallback to PATH only if project-relative wrapper doesn't exist
-  if vim.fn.executable(wrapper) == 0 then
-    wrapper = "shellgeist"
+  local project_path = project_path_from_plugin()
+  local wrapper_path = project_path .. "/shellgeist"
+  local cmd = nil
+
+  -- Prefer project wrapper even if not executable: run via bash to avoid PATH stale binary.
+  if vim.fn.filereadable(wrapper_path) == 1 then
+    cmd = { "bash", wrapper_path, "daemon" }
+  elseif vim.fn.executable("shellgeist") == 1 then
+    cmd = { "shellgeist", "daemon" }
   end
 
-  if vim.fn.executable(wrapper) == 0 then
+  if not cmd then
     notify("Error: ShellGeist wrapper not found.", vim.log.levels.ERROR)
     return
   end
 
-  vim.fn.jobstart({ wrapper, "daemon" }, {
+  vim.fn.jobstart(cmd, {
     on_stderr = function(_, data)
       local debug_enabled = (vim.env.SHELLGEIST_DEBUG == "1")
       local lines = {}
@@ -243,15 +402,19 @@ function M.run_agent(goal)
         local session_id = vim.fn.sha256(root)
         M._last_root = root
         M._last_session_id = session_id
-        M._conversation_fresh = true
-        rpc.request(M._cfg.socket, { cmd = "reset_session", session_id = session_id }, function() end)
         sidebar.focus_prompt()
       end)
       return
     end
 
     ensure_daemon(function()
-      local root = project_root()
+      local root = pick_safe_root(
+        root_from_goal(goal),
+        current_buffer_root(),
+        project_path_from_plugin(),
+        project_root(),
+        M._last_root
+      )
       local session_id = vim.fn.sha256(root)
       M._last_root = root
       M._last_session_id = session_id
@@ -260,10 +423,6 @@ function M.run_agent(goal)
       if not ok_open then
         notify("sidebar.open failed: " .. tostring(err_open), vim.log.levels.ERROR)
         return
-      end
-      if not was_open then
-        M._conversation_fresh = true
-        rpc.request(M._cfg.socket, { cmd = "reset_session", session_id = session_id }, function() end)
       end
 
       local function run_agent()
@@ -281,6 +440,12 @@ function M.run_agent(goal)
           local content = tostring(event.content or "")
           local phase = tostring(event.phase or "")
           local meta = type(event.meta) == "table" and event.meta or {}
+          if not meta.root or meta.root == "" then
+            meta.root = root
+          end
+          if not meta.mode or meta.mode == "" then
+            meta.mode = agent_mode
+          end
 
           if channel == "status" then
             local thinking = false
@@ -379,6 +544,12 @@ function M.run_agent(goal)
             else
               sidebar.append_text(content, "thinking", meta)
             end
+          elseif channel == "response_draft" then
+            if meta.chunk then
+              sidebar.append_text(content, "response_draft_chunk", meta)
+            end
+          elseif channel == "response_discard" then
+            sidebar.append_text("", "response_discard", meta)
           elseif channel == "response" then
             if phase == "done" or meta.final then
               sidebar.set_thinking(false)
@@ -475,6 +646,22 @@ vim.api.nvim_create_user_command("SGPing", function()
         notify("ok")
       end)
     end)
+  end)
+end, {})
+
+-- ── SGNew: start a fresh conversation for current project ──
+vim.api.nvim_create_user_command("SGNew", function()
+  local root = project_root()
+  local session_id = vim.fn.sha256(root)
+  M._last_root = root
+  M._last_session_id = session_id
+  M._conversation_fresh = true
+  rpc.request(M._cfg.socket, { cmd = "reset_session", session_id = session_id }, function(ev)
+    if ev and ev.ok then
+      notify("Nouvelle conversation démarrée.")
+    else
+      notify("Impossible de réinitialiser la session.", vim.log.levels.ERROR)
+    end
   end)
 end, {})
 

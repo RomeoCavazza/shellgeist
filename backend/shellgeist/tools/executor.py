@@ -7,6 +7,21 @@ from typing import Any
 
 from shellgeist.runtime.policy import is_failed_result
 
+
+def _tool_failed(func_name: str, observation: str) -> bool:
+    content = (observation or "").strip()
+    if not content:
+        return False
+    if func_name == "read_file":
+        if content.startswith(("Error:", "Blocked:", "BLOCKED_", "POLICY_DENY", "CIRCUIT_BREAKER")):
+            return True
+        try:
+            obj = json.loads(content)
+            return isinstance(obj, dict) and obj.get("ok") is False
+        except Exception:
+            return False
+    return is_failed_result(content)
+
 @dataclass
 class ToolExecutionOutcome:
     kind: str  # observation | failure
@@ -19,7 +34,7 @@ class ToolExecutionOutcome:
     @property
     def success(self) -> bool:
         """Heuristic for whether the tool actually did its job."""
-        return not is_failed_result(self.observation)
+        return not _tool_failed(self.func_name, self.observation)
 
 async def execute_tool_call(
     *,
@@ -51,7 +66,7 @@ async def execute_tool_call(
     )
     
     res_str = _observation_string(res, func_name)
-    loop_guard.record_outcome(func_name, args, res_str)
+    loop_guard.record_outcome(func_name, args, f"Error: read_file_failed" if _tool_failed(func_name, res_str) else res_str)
     
     return ToolExecutionOutcome(
         kind="observation",

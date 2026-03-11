@@ -665,6 +665,10 @@ def run_shell(command: str, root: str, **kwargs: Any) -> str:
         )
         out = p.stdout or ""
         if p.returncode != 0:
+            # Accept timeout previews even with env prefixes, e.g. "TERM=dumb timeout 6s python3 cube.py"
+            if p.returncode == 124 and re.search(r"(^|\s)timeout\s+\d+[smh]?\s+", cmd):
+                suffix = "" if out.endswith("\n") or out == "" else "\n"
+                return f"{out}{suffix}[preview_timeout_reached]"
             extra_hint = ""
             if p.returncode == 127 and re.match(r"^\s*(python3?|python|pip3?|pip)\b", cmd):
                 extra_hint = (
@@ -675,8 +679,10 @@ def run_shell(command: str, root: str, **kwargs: Any) -> str:
             suffix = "" if out.endswith("\n") or out == "" else "\n"
             return f"{out}{suffix}[exit_code={p.returncode}]{extra_hint}"
         return out if out else "Success"
-    except subprocess.TimeoutExpired:
-        return "Error executing command: timeout after 60s"
+    except subprocess.TimeoutExpired as e:
+        out = (e.stdout or "") if isinstance(e.stdout, str) else ""
+        suffix = "" if out.endswith("\n") or out == "" else "\n"
+        return f"{out}{suffix}Error executing command: timeout after 60s"
     except Exception as e:
         return f"Error executing command: {e}"
 

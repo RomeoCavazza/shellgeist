@@ -45,7 +45,18 @@ async def handle_request(raw_req: dict, writer: asyncio.StreamWriter | None = No
 
     try:
         if cmd == 'ping':
-            return SGResult(ok=True).model_dump()
+            server_file = Path(__file__).resolve()
+            # .../backend/shellgeist/runtime/server.py -> repo root is parents[3]
+            repo_root = str(server_file.parents[3]) if len(server_file.parents) >= 4 else str(server_file.parent)
+            package_root = str(server_file.parents[2]) if len(server_file.parents) >= 3 else str(server_file.parent)
+            return SGResult(
+                ok=True,
+                data={
+                    "repo_root": repo_root,
+                    "package_root": package_root,
+                    "server_file": str(server_file),
+                },
+            ).model_dump()
 
         if cmd == 'git_status':
             root = _resolve_root(req.root)

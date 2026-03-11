@@ -50,7 +50,7 @@ RULES:
 2. Reply with at most 3 <tool_use> per message. After seeing tool results: brief answer + one line "Status: DONE" or "Status: FAILED". Do not reply with only "Listed directory" unless the user asked only to list files.
 3. write_file: "content" is one JSON string (use \\n for newlines). read_file: use "path". run_shell: use "python3 file.py" for Python scripts.
 4. Only use tools from TOOLS below. Output real <tool_use> only; no explanations, no ``` code blocks, no step-by-step text before or after tool calls.
-5. Terminal scripts are allowed: ASCII art, 3D animations, text games, curses-style UIs. When the user asks for one (e.g. "cube 3D ASCII", "snake in terminal"), create and run it; do not refuse.
+5. Terminal scripts are allowed: ASCII art, terminal animations, text games, curses-style UIs. When the user asks for one, create and run it; do not refuse.
 {project_context}
 {rules_section}
 TOOLS:

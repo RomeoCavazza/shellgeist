@@ -80,6 +80,21 @@ class LoopGuard:
             payload = f"{tool_name}:{args}"
         return sha256(payload.encode("utf-8", errors="replace")).hexdigest()
 
+    def _is_validation_like_call(self, tool_name: str, args: dict[str, Any]) -> bool:
+        if tool_name not in ("run_shell", "exec_shell_session"):
+            return False
+        cmd = (args.get("command") or "").strip()
+        if not cmd:
+            return False
+        return bool(
+            re.search(r"\bpython3\s+-m\s+py_compile\b", cmd)
+            or re.search(r"\btimeout\s+\S+\s+python3\b", cmd)
+            or re.search(r"\bpython3\s+\S+\.py\b", cmd)
+        )
+
+    def _is_safe_repeatable_tool(self, tool_name: str) -> bool:
+        return tool_name in ("read_file", "list_files", "find_files")
+
     def check_call(self, tool_name: str, args: dict[str, Any]) -> tuple[str, str]:
         self.total_calls += 1
         if self.total_calls > self.config.global_call_limit:
@@ -97,7 +112,10 @@ class LoopGuard:
         
         count = self.call_counts.get(call_hash, 0) + 1
         self.call_counts[call_hash] = count
-        if count >= self.config.block_threshold:
+        block_threshold = self.config.block_threshold + (3 if self._is_validation_like_call(tool_name, args) else 0)
+        if self._is_safe_repeatable_tool(tool_name):
+            block_threshold += 2
+        if count >= block_threshold:
             hint = ""
             if tool_name == "run_shell":
                 cmd = (args.get("command") or "").strip()
@@ -109,11 +127,13 @@ class LoopGuard:
 
     def record_outcome(self, tool_name: str, args: dict[str, Any], result: str) -> tuple[bool, str]:
         call_hash = self._hash_call(tool_name, args)
+        is_validation = self._is_validation_like_call(tool_name, args)
         if is_failed_result(result):
             # Track failure count — block after 2 identical failures
             f_count = self.failure_counts.get(call_hash, 0) + 1
             self.failure_counts[call_hash] = f_count
-            if f_count >= 2:
+            failure_threshold = 4 if is_validation else 2
+            if f_count >= failure_threshold:
                 self.blocked_call_hashes.add(call_hash)
                 hint = ""
                 if tool_name == "run_shell":
@@ -124,7 +144,11 @@ class LoopGuard:
         else:
             s_count = self.success_counts.get(call_hash, 0) + 1
             self.success_counts[call_hash] = s_count
-            if s_count >= self.config.success_repeat_threshold:
+            if (
+                not is_validation
+                and not self._is_safe_repeatable_tool(tool_name)
+                and s_count >= self.config.success_repeat_threshold
+            ):
                 self.blocked_call_hashes.add(call_hash)
                 return True, f"BLOCKED_SUCCESS_REPEAT: {tool_name} already succeeded."
         
