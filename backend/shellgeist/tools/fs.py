@@ -94,6 +94,9 @@ class WriteFileInput(BaseModel):
 )
 def write_file(path: str | None = None, content: str = "", root: str = "", file_path: str | None = None, file: str | None = None, **kwargs: Any) -> str:
     target = (path or file_path or file or "").strip()
+    # Some models send absolute paths with double slash (e.g. "//home/..."); normalize so resolve_repo_path works as expected
+    while target.startswith("//"):
+        target = target[1:]
     p = resolve_repo_path(Path(root), target)
     p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -116,7 +119,7 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
     if existed and old_text == content:
         return (
             f"NO_CHANGE: {target} already contains this exact content. "
-            "Do NOT call write_file again. Proceed to the next step or say Status: DONE."
+            "Do NOT call write_file again with the same content. Proceed to the next step or say Status: DONE."
         )
 
     p.write_text(content, encoding="utf-8")

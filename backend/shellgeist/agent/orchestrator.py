@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from shellgeist.agent.parsing.json_utils import loads_obj
+from shellgeist.agent.parsing.normalize import strip_leading_code_fence, strip_fences
 from shellgeist.agent.parsing.parser import parse_canonical_tool_use, parse_xml_tool_use
 
 
@@ -90,6 +92,11 @@ _PLAINTEXT_TOOL_RE = re.compile(
     r'(\{[^}]*\})',                           # JSON body
     re.IGNORECASE | re.DOTALL,
 )
+# Pattern: tool_name{ ... } (no separator; model outputs write_file{"path": "x", ...})
+_PLAINTEXT_TOOL_NO_SEP_RE = re.compile(
+    r'\b(write_file|read_file|list_files|run_shell|find_files|edit_file)\s*(\{)',
+    re.IGNORECASE,
+)
 
 
 def _normalize_tool_payload(obj: Any) -> list[dict[str, Any]]:
@@ -134,6 +141,8 @@ def _normalize_tool_payload(obj: Any) -> list[dict[str, Any]]:
                     p = args.get("file_path") or args.get("filename") or args.get("file")
                     if isinstance(p, str) and p.strip():
                         args["path"] = p
+                if isinstance(args.get("content"), str):
+                    args["content"] = strip_fences(args["content"])
             elif tool_name == "run_shell":
                 if "command" not in args:
                     cmd = args.get("cmd") or args.get("script")
@@ -154,6 +163,8 @@ def _normalize_tool_payload(obj: Any) -> list[dict[str, Any]]:
         if not mapped:
             continue
         if isinstance(v, dict):
+            if mapped in ("write_file", "edit_file") and isinstance(v.get("content"), str):
+                v = {**v, "content": strip_fences(v["content"])}
             calls.append({"name": mapped, "arguments": v})
         elif isinstance(v, str):
             # Natural shorthand for shell-like tools
@@ -168,17 +179,71 @@ def extract_plaintext_tool_calls(content: str) -> list[dict[str, Any]]:
     """Extract tool calls written as plain text (without XML tags).
 
     Handles:
-    1. ToolName: { json }
-    2. Bare JSON with "name": "..."
+    1. ToolName: { json } or ToolName( { json }
+    2. tool_name{ json } (no separator)
+    3. Content inside ```python or ``` code blocks
+    4. Bare JSON with "name": "..."
     """
+    raw = content or ""
+
+    # 0. Try inside code fences (model wraps tool call in ```python, ```bash, ```json, or ```)
+    for fence_re in (
+        r"```python\s*([\s\S]*?)```",
+        r"```bash\s*([\s\S]*?)```",
+        r"```(?:json|javascript|js|lua|sh)\s*([\s\S]*?)```",
+        r"```\s*([\s\S]*?)```",
+    ):
+        for block in re.finditer(fence_re, raw, re.IGNORECASE):
+            inner = block.group(1).strip()
+            if "write_file" in inner or "read_file" in inner or "list_files" in inner or "run_shell" in inner:
+                calls = _extract_plaintext_tool_calls_impl(inner)
+                if calls:
+                    return calls
+
+    return _extract_plaintext_tool_calls_impl(raw)
+
+
+def _extract_plaintext_tool_calls_impl(content: str) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
-    
-    # 1. Classical "ToolName: { json }" match
+
+    # 1a. tool_name{ ... } (no separator; brace-balanced)
+    for m in _PLAINTEXT_TOOL_NO_SEP_RE.finditer(content):
+        name, brace_start = m.group(1).strip(), m.group(2)
+        tool_name = _CLASS_TO_TOOL.get(name.lower(), name)
+        start = m.start(2)
+        depth = 0
+        end = start
+        for i, c in enumerate(content[start:], start=start):
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if depth != 0:
+            continue
+        json_body = content[start:end]
+        try:
+            obj = loads_obj(json_body)
+            if isinstance(obj, dict) and obj:
+                args = obj.get("arguments", obj)
+                if not isinstance(args, dict):
+                    args = {k: v for k, v in obj.items() if k not in ("name", "arguments")}
+                calls.append({"name": tool_name, "arguments": args or {}})
+        except Exception:
+            continue
+    if calls:
+        return calls
+
+    # 1b. Classical "ToolName: { json }" match
+    # 1b. Classical "ToolName: { json }" match
     for m in _PLAINTEXT_TOOL_RE.finditer(content):
         raw_name = m.group(1).strip().lower()
         json_body = m.group(2)
         tool_name = _CLASS_TO_TOOL.get(raw_name)
-        if not tool_name: continue
+        if not tool_name:
+            continue
         try:
             obj = loads_obj(json_body)
             if isinstance(obj, dict):
@@ -186,9 +251,10 @@ def extract_plaintext_tool_calls(content: str) -> list[dict[str, Any]]:
         except Exception:
             continue
 
-    if calls: return calls
+    if calls:
+        return calls
 
-    # 2) Try fenced JSON blocks first (often arrays of tool calls)
+    # 2) Try fenced JSON blocks
     fenced_blocks = re.findall(r"```json\s*([\s\S]*?)\s*```", content, re.IGNORECASE)
     for block in fenced_blocks:
         try:
@@ -229,6 +295,8 @@ def classify_model_turn(content: str) -> ModelTurnClassification:
     The canonical format is parsed first; permissive parsers remain available
     only as fallbacks so the runtime can progressively tighten the contract.
     """
+    # Accept leading markdown code block (e.g. ```python) so that tool_use after it is found
+    content = strip_leading_code_fence(content or "")
     canonical_calls = parse_canonical_tool_use(content)
     if canonical_calls:
         return ModelTurnClassification(
@@ -257,6 +325,53 @@ def classify_model_turn(content: str) -> ModelTurnClassification:
         )
 
     return ModelTurnClassification(kind="none", tool_calls=[])
+
+
+def salvage_slope_to_tool_calls(
+    content: str,
+    strict_target: str,
+    root: str,
+) -> list[dict[str, Any]]:
+    """When the model replies with raw code blocks or command lines instead of <tool_use>,
+    convert them to tool calls so we don't reject the slope.
+
+    - First ```python or ``` block that looks like code → write_file(strict_target, content)
+    - Line matching 'timeout Ns python3 path' or 'python3 path.py' targeting strict_target → run_shell
+    """
+    if not content or not strict_target or not strict_target.lower().endswith(".py"):
+        return []
+
+    calls: list[dict[str, Any]] = []
+    target_name = Path(strict_target).name
+
+    # 1) First code block that looks like Python/code (not JSON/tool_use)
+    for fence_re in (r"```python\s*([\s\S]*?)```", r"```\s*([\s\S]*?)```"):
+        for m in re.finditer(fence_re, content, re.IGNORECASE):
+            inner = m.group(1).strip()
+            if "<tool_use>" in inner or '"name":' in inner and '"write_file"' in inner:
+                continue
+            if re.search(r"\b(?:def |import |class |if __name__)", inner):
+                code = strip_fences(inner)
+                if code and len(code) > 20:
+                    calls.append({
+                        "name": "write_file",
+                        "arguments": {"path": strict_target, "content": code},
+                    })
+                break
+        if calls:
+            break
+
+    # 2) Line that looks like validation command: timeout Ns python3 ... or python3 ...py
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if re.search(r"\btimeout\s+\d+[smh]?\s+python3\s+", line) or re.match(r"python3\s+\S+\.py", line):
+            if target_name in line or strict_target in line:
+                calls.append({"name": "run_shell", "arguments": {"command": line}})
+                break
+
+    return calls
 
 
 def normalize_final_response(content: str) -> str:

@@ -13,6 +13,7 @@ from shellgeist.agent.orchestrator import (
     decide_no_tool_action,
     is_small_talk,
     normalize_final_response,
+    salvage_slope_to_tool_calls,
 )
 from shellgeist.config import debug_enabled as _debug_enabled
 from shellgeist.llm import build_system_prompt, get_client, run_llm_stream_with_retry
@@ -251,6 +252,25 @@ def _summarize_list_observation(observation: str, directory: str) -> str:
 
 def _looks_like_read_only_goal(goal: str) -> bool:
     return _goal_family(goal) == "read"
+
+
+# Basenames that must not be overwritten unless the user explicitly asked to create/modify them
+_PROTECTED_DOC_BASENAMES = frozenset({"readme.md", "license", "contributing.md", "license.md", "contributing"})
+_WRITE_LIKE_KEYWORDS = (
+    "crée", "créer", "réécris", "réécrire", "modifie", "modifier", "write", "create",
+    "update", "remplace", "replace", "édite", "edit", "overwrite", "écris", "écrire",
+)
+
+
+def _goal_requests_write_to_path(goal: str, path: str) -> bool:
+    """True if the goal explicitly asks to create or modify this file (by name)."""
+    if not goal or not path:
+        return False
+    low = goal.strip().lower()
+    base = Path(path).name.lower()
+    if base not in low and base.replace(".md", "") not in low:
+        return False
+    return any(kw in low for kw in _WRITE_LIKE_KEYWORDS)
 
 
 def _primary_goal_file_reference(goal: str) -> str | None:
@@ -500,6 +520,21 @@ def _repair_guidance_for_failure(command: str, observation: str) -> str:
             "Réécris le script pour qu’il fonctionne sans `input()` bloquant et sans argument obligatoire absent, "
             "ou qu’il ait un comportement par défaut quand aucun input utilisateur n’est fourni."
         )
+    obs_lower = (observation or "").lower()
+    if "syntaxerror" in obs_lower:
+        hints = []
+        if "f-string" in obs_lower or "single '}'" in obs_lower:
+            hints.append("En f-string, pour afficher une variable utilise {e} (un seul }); pour une accolade littérale utilise }}.")
+        if "unmatched ')'" in obs_lower or "unmatched '}'" in obs_lower:
+            hints.append("Vérifie que chaque ( a une ) correspondante et qu'il n'y a pas d'accolade ou parenthèse en trop.")
+        if hints:
+            return " " + " ".join(hints)
+    if "no such file or directory" in obs_lower or "errno 2" in obs_lower:
+        return " Le fichier cible n'existe pas encore. Crée-le avec write_file puis relance la validation (py_compile / python3)."
+    if "usage:" in obs_lower and "[exit_code=1]" in (observation or ""):
+        return " La commande demandée s'exécute sans argument. Le script ne doit pas exiger d'argument (ex. pas de sys.argv obligatoire) ; il doit fonctionner avec un simple « python3 fichier.py »."
+    if "[errno " in obs_lower or "no address associated" in obs_lower or "name or service not known" in obs_lower:
+        return " Ne copie jamais le message d'erreur littéralement dans le code (ex. comme hostname ou chaîne). Corrige la logique du script : utilise un hostname valide, ou gère l'exception et affiche un message clair, ou exécute sans argument avec un comportement par défaut (ex. print('pong'))."
     return ""
 
 
@@ -517,6 +552,8 @@ def _is_validation_failure_observation(observation: str) -> bool:
         for token in (
             "syntaxerror", "traceback", "nameerror", "typeerror", "valueerror",
             "indentationerror", "unterminated string literal", "validation failed",
+            "[errno ", "no address associated with hostname", "name or service not known",
+            "syntaxwarning:", "attributeerror:",
         )
     )
 
@@ -697,29 +734,32 @@ def _summarize_read_observation(goal: str, path: str, observation: str) -> str:
 def _summarize_failure_for_user(observation: str, turn: TurnState | None = None) -> str:
     raw = (observation or "").strip()
     label = f"`{Path(turn.strict_target).name}`" if turn and turn.strict_target else "la tâche"
+    bilan = ""
+    if turn and getattr(turn, "repair_attempts", 0) >= 1:
+        bilan = f"Tentatives de correction : {turn.repair_attempts}. "
     lower = raw.lower()
     if "blocked_repeat" in lower:
         return (
-            f"{label} n’a pas pu être terminé parce que le runtime a bloqué des appels répétés avant la fin. "
+            f"{bilan}{label} n’a pas pu être terminé parce que le runtime a bloqué des appels répétés avant la fin. "
             "Le modèle est probablement resté bloqué dans une boucle de vérification ou de relance. "
             "Je te conseille de relancer avec une consigne plus directive, ou de laisser la boucle de réparation réécrire puis exécuter sans multiplier les mêmes lectures.\n\n"
             f"Détail technique : {raw}"
         )
     if "eoferror" in lower or "when reading a line" in lower:
         return (
-            f"{label} a bien été généré, mais il attend encore une entrée interactive alors que la commande demandée s’exécute sans stdin. "
+            f"{bilan}{label} a bien été généré, mais il attend encore une entrée interactive alors que la commande demandée s’exécute sans stdin. "
             "La correction attendue est de rendre le script autonome sans `input()` bloquant, ou de prévoir une valeur/stratégie par défaut.\n\n"
             f"Détail technique : {raw}"
         )
     if "syntaxerror" in lower or "nameerror" in lower or "typeerror" in lower or "traceback" in lower:
         return (
-            f"{label} a bien été généré, mais il échoue encore à l’exécution ou à la validation Python. "
+            f"{bilan}{label} a bien été généré, mais il échoue encore à l’exécution ou à la validation Python. "
             "Le modèle n’a pas terminé correctement la correction du fichier avant la fin du tour. "
             "La prochaine étape logique est une réécriture ciblée du fichier puis une relance de la validation demandée.\n\n"
             f"Détail technique : {raw}"
         )
     return (
-        f"{label} n’a pas pu être terminé proprement. "
+        f"{bilan}{label} n’a pas pu être terminé proprement. "
         "Le runtime a interrompu la tâche après un échec répété ou un état non récupérable. "
         "Une nouvelle tentative plus guidée ou une correction ciblée est probablement nécessaire.\n\n"
         f"Détail technique : {raw}"
@@ -954,8 +994,6 @@ class Agent:
         for i in range(max_steps):
             repaired, report = repair_conversation_history(self.history)
             self.history = repaired
-            
-            await ui.status(True)
 
             turn_ctx = _classify_turn(turn, self.history, goal, i)
             deterministic_calls, deterministic_flags = _build_deterministic_batch_if_possible(
@@ -974,6 +1012,8 @@ class Agent:
                 logs.append(content_str)
                 await ui.status(False)
             else:
+                # Only show "thinking" when we're about to call the LLM (not for deterministic list/read)
+                await ui.status(True)
                 # Stream response tokens to UI in real-time
                 async def _on_response_chunk(delta: str) -> None:
                     await _emit_response_draft(ui, turn, delta)
@@ -1000,7 +1040,18 @@ class Agent:
             strict_block_feedback = None
             strict_protocol_feedback = None
 
-            if turn.strict_target and not deterministic_calls:
+            if not deterministic_calls:
+                model_turn = classify_model_turn(content_str)
+                tool_calls = model_turn.tool_calls
+                # Accept slope: code blocks / command lines → convert to write_file / run_shell instead of rejecting
+                if not tool_calls and turn.strict_target:
+                    slope_calls = salvage_slope_to_tool_calls(
+                        content_str, turn.strict_target, self.root
+                    )
+                    if slope_calls:
+                        tool_calls = slope_calls
+
+            if turn.strict_target and not deterministic_calls and not tool_calls:
                 strict_protocol_feedback = _strict_tool_only_feedback(content_str, turn.strict_target)
                 if strict_protocol_feedback:
                     await _discard_response_draft(ui, turn)
@@ -1009,9 +1060,6 @@ class Agent:
                     _debug_log(f"Strict tool-only rejection. Feedback: {strict_protocol_feedback}")
                     continue
 
-            if not deterministic_calls:
-                model_turn = classify_model_turn(content_str)
-                tool_calls = model_turn.tool_calls
             if tool_calls and turn.strict_target and not deterministic_calls:
                 tool_calls, strict_block_feedback = _filter_single_target_tool_calls(
                     tool_calls,
@@ -1104,6 +1152,7 @@ class Agent:
             for tc in tool_calls:
                 func_name = tc.get("name")
                 args = tc.get("arguments", {})
+                validation_just_passed = False
 
                 # Emit rich status for each tool call (text labels, no emoji)
                 _STATUS_ICONS = {
@@ -1149,27 +1198,31 @@ class Agent:
                 path_arg = str(args.get("path") or args.get("file") or "").strip() if func_name in ("write_file", "edit_file", "read_file") else ""
                 normalized_path_arg = _normalize_workspace_path(path_arg, self.root) if path_arg else ""
 
-                if turn.strict_target and turn.failed_validation_command:
-                    allowed_repair_call = False
-                    if func_name == "read_file":
-                        allowed_repair_call = (
-                            normalized_path_arg == turn.strict_target_rel
-                            and turn.repair_reads == 0
-                            and not turn.repair_rewritten
-                        )
-                    elif func_name == "write_file":
-                        allowed_repair_call = normalized_path_arg == turn.strict_target_rel
-                    elif func_name in ("run_shell", "exec_shell_session"):
-                        allowed_repair_call = (
-                            turn.repair_rewritten
-                            and command_arg == turn.failed_validation_command
-                        )
+                # Strict single-file: if user requested "timeout Ns python3 target.py" but agent sent bare "python3 target.py", rewrite and run (no deny loop)
+                if (
+                    func_name in ("run_shell", "exec_shell_session")
+                    and command_arg
+                    and turn.strict_target
+                    and turn.requested_commands
+                ):
+                    requested_with_timeout = [
+                        c for c in turn.requested_commands
+                        if re.search(r"\btimeout\s+\d+[smh]?\s+python3\b", c)
+                        and _command_targets_strict_file(c, turn.strict_target, self.root)
+                    ]
+                    if requested_with_timeout and _command_targets_strict_file(command_arg, turn.strict_target, self.root):
+                        if not re.search(r"\btimeout\s+\d+[smh]?\s+", command_arg):
+                            exact_cmd = requested_with_timeout[0]
+                            args["command"] = exact_cmd
+                            command_arg = exact_cmd
 
-                    if not allowed_repair_call:
+                # Block write_file to README/LICENSE/CONTRIBUTING unless the user explicitly asked to create/modify that file
+                if func_name == "write_file" and path_arg:
+                    path_basename_lower = Path(path_arg).name.lower()
+                    if path_basename_lower in _PROTECTED_DOC_BASENAMES and not _goal_requests_write_to_path(goal, path_arg):
                         obs = (
-                            f"POLICY_DENY: Repair in progress for `{Path(turn.strict_target).name}`. "
-                            "Allowed sequence: optional read_file on the target, then write_file on the target, "
-                            "then rerun the same failing validation command."
+                            f"POLICY_DENY: You must NOT overwrite `{Path(path_arg).name}` unless the user explicitly asked to create or modify that file. "
+                            "The user did not ask to change this file. Use run_shell or read_file only as requested."
                         )
                         await ui.emit_execution_event("tool_result", obs, phase="tool_use", meta={"tool": func_name, "success": False})
                         self.history.append({"role": "user", "content": f'<tool_observation name="{func_name}">\n{obs}\n</tool_observation>'})
@@ -1290,6 +1343,11 @@ class Agent:
                     matched_requested = _matching_requested_command(command_arg, turn.requested_commands, turn.strict_target, self.root)
                     if matched_requested:
                         turn.mark_requested_command_completed(matched_requested)
+                    validation_just_passed = (
+                        turn.failed_validation_command is not None
+                        and command_arg == turn.failed_validation_command
+                        and re.search(r"\btimeout\s+\d+[smh]?\s+python3\b", command_arg)
+                    )
                     if turn.failed_validation_command and command_arg == turn.failed_validation_command:
                         turn.failed_validation_command = None
                         turn.repair_attempts = 0
@@ -1314,6 +1372,13 @@ class Agent:
                 obs = f"<tool_observation name=\"{func_name}\">\n{obs}\n</tool_observation>"
                 self.history.append({"role": "user", "content": obs})
                 save_db_message(session_id, "user", obs, log_type="context")
+
+                # Validation just passed (timeout Ns python3): complete immediately to avoid model re-running the same command in a loop
+                if validation_just_passed:
+                    final_response = _strict_success_response(turn.strict_target, turn.requested_commands)
+                    self.history.append({"role": "assistant", "content": final_response})
+                    await ui.emit_execution_event("response", final_response, phase="done", meta={"final": True})
+                    return {"ok": True, "status": "completed", "logs": logs, "response": final_response}
 
                 if turn.strict_target and not outcome.success:
                     abort_strict_turn = True
@@ -1350,8 +1415,9 @@ class Agent:
 
                         repair_feedback = (
                             f"REPAIR_REQUIRED: Validation failed for `{Path(turn.strict_target).name}`. "
-                            "Tu peux lire la cible une fois si nécessaire, puis la réécrire avec write_file, "
-                            "puis relancer exactement la même validation."
+                            "Prochaine action : corrige l'erreur avec un seul **write_file** sur ce fichier, puis relance la même validation. "
+                            "N'appelle pas run_shell tant que le fichier n'est pas corrigé. Évite read_file en boucle ou d'autres outils inutiles. "
+                            "Tu peux lire la cible une fois si nécessaire, puis la réécrire avec write_file, puis relancer exactement la même validation."
                             + _repair_guidance_for_failure(command_arg, outcome.observation)
                         )
                         self.history.append({"role": "user", "content": repair_feedback})

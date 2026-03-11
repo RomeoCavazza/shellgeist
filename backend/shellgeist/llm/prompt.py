@@ -51,6 +51,8 @@ RULES:
 3. write_file: "content" is one JSON string (use \\n for newlines). read_file: use "path". run_shell: use "python3 file.py" for Python scripts.
 4. Only use tools from TOOLS below. Output real <tool_use> only; no explanations, no ``` code blocks, no step-by-step text before or after tool calls.
 5. Terminal scripts are allowed: ASCII art, terminal animations, text games, curses-style UIs. When the user asks for one, create and run it; do not refuse.
+6. If the user says "execute it", "run it", "exécute-le" or "exécute-le et renvoie la sortie" after you wrote a .py file: call run_shell with python3 <that file>.py and return the output; do not call list_files or read_file for that.
+7. When a path is ambiguous (e.g. __init__.py or shellgeist/__init__.py), use the full relative path from workspace root (e.g. backend/shellgeist/__init__.py).
 {project_context}
 {rules_section}
 TOOLS:

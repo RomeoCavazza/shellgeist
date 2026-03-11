@@ -50,6 +50,38 @@ def strip_fences(s: str) -> str:
     return s
 
 
+def strip_leading_code_fence(text: str) -> str:
+    """Remove one leading markdown code block (e.g. ```python\\n...\\n```) so that
+    <tool_use> or other content after it is found by parsers.
+    Accepts any language: python, bash, json, etc.
+    """
+    if not text or not text.strip():
+        return text
+    s = text.lstrip()
+    if not s.startswith("```"):
+        return text
+    first_newline = s.find("\n")
+    if first_newline == -1:
+        return text
+    rest = s[first_newline + 1:]
+    close = rest.find("\n```")
+    if close == -1:
+        for i, line in enumerate(rest.splitlines()):
+            if line.strip().startswith("```"):
+                lines = rest.splitlines()
+                rest = "\n".join(lines[i + 1:]) if i + 1 < len(lines) else ""
+                return rest.lstrip()
+        # Unclosed fence: strip first line (```lang) and return the rest
+        return rest.lstrip()
+    rest = rest[close + 1:].lstrip()
+    after_close = rest.find("\n")
+    if after_close != -1:
+        rest = rest[after_close + 1:]
+    else:
+        rest = ""
+    return rest.lstrip()
+
+
 # =============================================================================
 # FULLTEXT SALVAGE — broken JSON → extract "content" field
 # =============================================================================

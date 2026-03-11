@@ -55,11 +55,34 @@ def is_failed_result(res_str: str) -> bool:
         "validation failed for ",
     )):
         return True
+    # Run output that clearly indicates failure even when process exited 0 (e.g. Python script printed error to stdout)
+    if any(x in lower for x in (
+        "[errno ",
+        "no address associated with hostname",
+        "name or service not known",
+        "traceback (most recent call last)",
+        "syntaxerror",
+        "syntaxwarning:",
+        "typeerror:",
+        "attributeerror:",
+        "nameerror:",
+    )):
+        return True
     try:
         obj = json.loads(s)
         return isinstance(obj, dict) and obj.get("ok") is False
     except Exception:
         return False
+
+
+def is_ambiguous_path_result(res_str: str) -> bool:
+    """True if the result is an ambiguous path error (user can retry with a full path)."""
+    return "ambiguous file path" in (res_str or "").lower()
+
+
+def is_no_change_result(res_str: str) -> bool:
+    """True if write_file returned NO_CHANGE (same content already present). Do not count as success for repeat blocking."""
+    return "NO_CHANGE:" in (res_str or "")
 
 
 class LoopGuard:
@@ -129,6 +152,9 @@ class LoopGuard:
         call_hash = self._hash_call(tool_name, args)
         is_validation = self._is_validation_like_call(tool_name, args)
         if is_failed_result(result):
+            # Ambiguous path: do not count as failure so the model can retry with a full path
+            if is_ambiguous_path_result(result):
+                return False, ""
             # Track failure count — block after 2 identical failures
             f_count = self.failure_counts.get(call_hash, 0) + 1
             self.failure_counts[call_hash] = f_count
@@ -142,6 +168,9 @@ class LoopGuard:
                         hint = " Use 'python3 <your_script>.py'. Stop retrying the same failing command."
                 return True, f"BLOCKED_REPEAT_FAILURE: {tool_name} failed {f_count} times with same args. Stop retrying." + hint
         else:
+            # NO_CHANGE from write_file: do not count as success so we don't block "already succeeded" on retry
+            if is_no_change_result(result):
+                return False, ""
             s_count = self.success_counts.get(call_hash, 0) + 1
             self.success_counts[call_hash] = s_count
             if (

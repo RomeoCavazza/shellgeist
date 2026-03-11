@@ -99,7 +99,18 @@ async def handle_request(raw_req: dict, writer: asyncio.StreamWriter | None = No
                 reader=reader,
                 fresh_conversation=fresh,
             )
-            return SGResult(ok=res["ok"], data=res).model_dump()
+            status = res.get("status")
+            if status not in ("completed", "failed", "stopped", "running"):
+                status = "failed" if not res["ok"] else "completed"
+            return SGResult(
+                ok=res["ok"],
+                data=res,
+                error=res.get("error"),
+                detail=res.get("detail"),
+                status=status,
+                response=res.get("response"),
+                logs=res.get("logs", []),
+            ).model_dump()
 
         if cmd == 'reset_session':
             session_id = getattr(req, 'session_id', None) or "default"

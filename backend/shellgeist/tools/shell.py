@@ -615,6 +615,23 @@ def run_shell(command: str, root: str, **kwargs: Any) -> str:
     if not cmd:
         return "Error: empty command"
 
+    # If the model sent a literal <tool_use>...</tool_use> string as the command (e.g. nested/escaped output), extract the real command
+    if "<tool_use>" in cmd or "</tool_use>" in cmd:
+        try:
+            start = cmd.find("<tool_use>") + len("<tool_use>")
+            end = cmd.find("</tool_use>", start)
+            if end == -1:
+                end = len(cmd)
+            body = cmd[start:end].strip()
+            obj = json.loads(body)
+            if isinstance(obj, dict):
+                args = obj.get("arguments") or obj
+                inner = args.get("command") if isinstance(args, dict) else None
+                if isinstance(inner, str) and inner.strip():
+                    cmd = inner.strip()
+        except Exception:
+            pass
+
     # Rewrite ./script.py to python3 script.py to avoid Permission denied and bash interpreting Python
     first_part = cmd.split("#")[0].strip().split()
     if first_part and first_part[0].startswith("./") and first_part[0].endswith(".py"):
@@ -623,6 +640,21 @@ def run_shell(command: str, root: str, **kwargs: Any) -> str:
         if script_path.is_file():
             rest = " ".join(first_part[1:]) if len(first_part) > 1 else ""
             cmd = f"python3 {rel}" + (" " + rest if rest else "")
+
+    # Rewrite bare "py_compile file.py" to "python3 -m py_compile file.py" (py_compile is not on PATH as a binary)
+    if first_part and first_part[0].lower() == "py_compile" and len(first_part) >= 2:
+        path_arg = first_part[1]
+        if path_arg.endswith(".py"):
+            cmd = f"python3 -m py_compile {path_arg}"
+
+    # Rewrite "python3 shellgeist/script.py" to "python3 script.py" when script.py exists at root (avoids Errno 20 when shellgeist is the project name / a file)
+    if len(first_part) >= 2 and first_part[0].lower() in ("python3", "python") and first_part[1].endswith(".py"):
+        path_arg = first_part[1]
+        if "/" in path_arg and "shellgeist/" in path_arg:
+            script_name = path_arg.split("/")[-1]
+            if (Path(root) / script_name).is_file():
+                rest = " ".join(first_part[2:]) if len(first_part) > 2 else ""
+                cmd = f"python3 {script_name}" + (" " + rest if rest else "")
 
     # Reject commands that are clearly interactive (no script, no -c); they would block or exit immediately.
     cmd_lower = cmd.split("#")[0].strip().lower()
@@ -649,6 +681,11 @@ def run_shell(command: str, root: str, **kwargs: Any) -> str:
     if is_blocked(cmd):
         return "Blocked: unsafe command pattern detected."
 
+    # Scripts that might run forever (e.g. cube.py animation): use shorter timeout unless user already wrapped with timeout Ns
+    run_timeout = 60
+    if re.search(r"\bpython3\b.*\.py", cmd) and not re.search(r"\btimeout\s+\d+[smh]?\s+", cmd):
+        run_timeout = 15
+
     try:
         env = _build_shell_env(root)
 
@@ -661,7 +698,7 @@ def run_shell(command: str, root: str, **kwargs: Any) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=60,
+            timeout=run_timeout,
         )
         out = p.stdout or ""
         if p.returncode != 0:
@@ -682,7 +719,7 @@ def run_shell(command: str, root: str, **kwargs: Any) -> str:
     except subprocess.TimeoutExpired as e:
         out = (e.stdout or "") if isinstance(e.stdout, str) else ""
         suffix = "" if out.endswith("\n") or out == "" else "\n"
-        return f"{out}{suffix}Error executing command: timeout after 60s"
+        return f"{out}{suffix}Error executing command: timeout after {run_timeout}s"
     except Exception as e:
         return f"Error executing command: {e}"
 

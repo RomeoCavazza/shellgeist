@@ -568,6 +568,7 @@ function M.run_agent(goal)
           elseif channel == "error" then
             if phase == "done" or meta.final then
               sidebar.set_thinking(false)
+              final_error_already_shown = true
             end
             sidebar.append_text(content, "error", meta)
           end
@@ -577,6 +578,7 @@ function M.run_agent(goal)
         sidebar.append_text(goal, "user")
         local agent_mode = M.get_mode()
         local retried = false
+        local final_error_already_shown = false
 
         local function do_agent_request()
           local fresh = M._conversation_fresh
@@ -602,12 +604,18 @@ function M.run_agent(goal)
             end
 
             if handle_event(ev, reply) then return end
-            -- Error from daemon final result
+            -- Error from daemon final result: show only if we didn't already show a streamed final error
             if ev.ok == false then
               sidebar.set_thinking(false)
-              local err = ev.error or "error"
-              local detail = ev.detail and (" (" .. ev.detail .. ")") or ""
-              sidebar.append_text(err .. detail, "error")
+              if not final_error_already_shown then
+                local err = ev.error or (ev.data and ev.data.error) or ""
+                local detail = ev.detail and (" (" .. ev.detail .. ")") or ""
+                if err ~= "" then
+                  sidebar.append_text(err .. detail, "error")
+                else
+                  sidebar.append_text("La tâche a échoué.", "error")
+                end
+              end
             end
           end, { stream = true })
         end

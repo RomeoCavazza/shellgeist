@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from shellgeist.agent.parsing.json_utils import loads_obj
+from shellgeist.agent.parsing.normalize import strip_fences
 
 # Opening: <tool_use>, <tool_request>, <tool_call>, <tool call>, <tool_invocation>, <tool>
 # Optionally with attributes (e.g. name="run_shell")
@@ -34,6 +35,47 @@ _CANONICAL_TOOL_RE = re.compile(
     r"<tool_use>\s*(\{.*?\})\s*</tool_use>",
     re.DOTALL,
 )
+
+
+def _extract_brace_balanced_body(text: str, start_marker: str) -> str | None:
+    """Extract a single {...} body from text after start_marker, handling nested braces."""
+    idx = text.find(start_marker)
+    if idx == -1:
+        return None
+    start = text.find("{", idx + len(start_marker))
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    quote_char = None
+    i = start
+    while i < len(text):
+        c = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == quote_char:
+                in_string = False
+            i += 1
+            continue
+        if c in ('"', "'"):
+            in_string = True
+            quote_char = c
+            i += 1
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+        i += 1
+    return None
+
+
 # Extract name="..." from tag attributes
 _ATTR_NAME_RE = re.compile(r'name\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
 # XML-like body: <name>tool_name</name> and/or <arguments>...</arguments> or <parameters>...</parameters>
@@ -139,8 +181,8 @@ def parse_xml_tool_use(
     *,
     debug_log: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
-    # Strip markdown code fences so <tool_use> inside ```json ... ``` is still found
-    cleaned = re.sub(r"^```\s*(?:json)?\s*\n?", "", text)
+    # Strip markdown code fences so <tool_use> inside ```json / ```python / ```bash etc. is still found
+    cleaned = re.sub(r"^```\s*[a-z0-9]*\s*\n?", "", text, flags=re.IGNORECASE)
     cleaned = re.sub(r"\n?```\s*$", "", cleaned)
     if cleaned != text:
         text = cleaned
@@ -227,18 +269,30 @@ def parse_canonical_tool_use(text: str) -> list[dict[str, Any]]:
 
     This is the nominal contract expected from the model. More permissive
     parsers remain available as compatibility fallbacks.
+    Uses brace-balanced extraction so nested JSON in "arguments" is parsed correctly.
     """
+    raw = text or ""
     calls: list[dict[str, Any]] = []
-    for match in _CANONICAL_TOOL_RE.finditer(text or ""):
-        body = match.group(1).strip()
-        try:
-            obj = loads_obj(body)
-        except Exception:
-            continue
-        normalized = _normalize_calls([obj] if isinstance(obj, dict) else [])
-        for call in normalized:
-            if isinstance(call, dict) and isinstance(call.get("name"), str):
-                calls.append(call)
+    pos = 0
+    while True:
+        open_tag = raw.find("<tool_use>", pos)
+        if open_tag == -1:
+            break
+        # Extract body with balanced braces (handles "arguments": { ... })
+        body = _extract_brace_balanced_body(raw[open_tag:], "<tool_use>")
+        if body:
+            try:
+                obj = loads_obj(body)
+            except Exception:
+                obj = None
+            if isinstance(obj, dict) and obj.get("name"):
+                normalized = _normalize_calls([obj])
+                for call in normalized:
+                    if isinstance(call, dict) and isinstance(call.get("name"), str):
+                        calls.append(call)
+        # Move past this tag for next iteration (support multiple <tool_use> in one message)
+        close_tag = raw.find("</tool_use>", open_tag)
+        pos = close_tag + len("</tool_use>") if close_tag != -1 else open_tag + 1
     return calls
 
 
@@ -289,6 +343,8 @@ def _normalize_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     p = args.get("file_path") or args.get("filename") or args.get("file")
                     if isinstance(p, str) and p.strip():
                         args["path"] = p
+                if isinstance(args.get("content"), str):
+                    args["content"] = strip_fences(args["content"])
             elif low == "run_shell":
                 if "command" not in args:
                     cmd = args.get("cmd") or args.get("script")

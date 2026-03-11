@@ -203,9 +203,12 @@ class TurnState:
             self.last_valid_observation = observation
 
     def can_finalize_strict(self) -> bool:
-        if not self.strict_target or not self.target_written or not self.exact_content_satisfied:
+        if not self.strict_target or not self.exact_content_satisfied:
             return False
-        return all(cmd in self.completed_commands for cmd in self.requested_commands)
+        # All requested validation commands completed => success even if we didn't write in this turn (e.g. "réécris puis exécute" and model only ran existing file)
+        if self.requested_commands and all(cmd in self.completed_commands for cmd in self.requested_commands) and not self.failed_validation_command:
+            return True
+        return bool(self.target_written and all(cmd in self.completed_commands for cmd in self.requested_commands))
 
 
 # ---------------------------------------------------------------------------
