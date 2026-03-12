@@ -51,6 +51,31 @@ ShellGeist is an **academic-grade AI code assistant** for Neovim, designed as bo
 └── shellgeist      # Main CLI wrapper
 ```
 
+### Architecture
+
+ShellGeist utilizes a decentralized architecture where the UI is decoupled from the cognitive agent loop.
+
+```mermaid
+graph LR
+    subgraph NV [Neovim Frontend]
+        UI[Lua UI] <--> RPC[RPC Client]
+    end
+    
+    subgraph BE [Python Backend Daemon]
+        Server[Server] <--> Agent[Agent Loop]
+        Agent <--> Orch[Orchestrator]
+        Agent <--> Tools[Tools Library]
+    end
+    
+    subgraph EX [Infrastructure]
+        LLM[LLM Provider]
+    end
+
+    RPC <-->|JSON-lines / Unix Socket| Server
+    Agent <-->|Streaming HTTPS| LLM
+    Tools <-->|Local I/O| WS[Workspace]
+```
+
 > [!IMPORTANT]
 > For in-depth analysis of functions, state variables, and design patterns, refer to the [Technical Documentation Portal](docs/README.md).
 
@@ -95,34 +120,6 @@ graph TD
     IsSuccess -->|Yes| FT[Finalize Turn]
     FT --> Done((Done))
 ```
-
----
-
-## Architecture
-
-ShellGeist utilizes a decentralized architecture where the UI is decoupled from the cognitive agent loop.
-
-```mermaid
-graph LR
-    subgraph NV [Neovim Frontend]
-        UI[Lua UI] <--> RPC[RPC Client]
-    end
-    
-    subgraph BE [Python Backend Daemon]
-        Server[Server] <--> Agent[Agent Loop]
-        Agent <--> Orch[Orchestrator]
-        Agent <--> Tools[Tools Library]
-    end
-    
-    subgraph EX [Infrastructure]
-        LLM[LLM Provider]
-    end
-
-    RPC <-->|JSON-lines / Unix Socket| Server
-    Agent <-->|Streaming HTTPS| LLM
-    Tools <-->|Local I/O| WS[Workspace]
-```
-
 ---
 
 ## Commands
