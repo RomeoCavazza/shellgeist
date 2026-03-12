@@ -27,7 +27,13 @@
 
 ---
 
-[Overview](#overview) • [Preview](#preview) • [Project structure](#project-structure) • [Research & Logic](#research--logic) • [Architecture](#architecture) • [Commands](#commands) • [License](#license)
+[Overview](#overview) • 
+[Preview](#preview) • 
+[Project structure](#project-structure) • 
+[Research & Logic](#research--logic) • 
+[Architecture](#architecture) • 
+[Commands](#commands) • 
+[License](#license)
 
 </div>
 
@@ -78,6 +84,18 @@ graph LR
 
 > [!IMPORTANT]
 > For in-depth analysis of functions, state variables, and design patterns, refer to the [Technical Documentation Portal](docs/README.md).
+
+---
+
+## Documentation
+
+The root `README.md` is the main source of truth for this repository. Annexes live in `docs/`:
+
+- [**docs/README.md**](./docs/README.md) — annexes, Mermaid diagrams, and regeneration commands
+- [**docs/cloc-report.md**](./docs/cloc-report.md) — raw cloc report
+- [**docs/specification.txt**](./docs/specification.txt) — dense configuration glossary
+- [**docs/diagrams/**](./docs/diagrams/) — PlantUML sources (`.puml`)
+- [**docs/diagrams/png/**](./docs/diagrams/png/) — generated diagram images (`.png`)
 
 ---
 
