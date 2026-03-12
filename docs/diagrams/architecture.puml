@@ -1,0 +1,36 @@
+@startuml architecture
+!define RECTANGLE class
+
+package "Frontend (Neovim)" {
+    [Sidebar UI] <<Lua>> as UI
+    [RPC Client] <<Lua>> as RPC
+    [Conflict Resolver] <<Lua>> as Conflict
+}
+
+package "Backend (Daemon)" {
+    [Server] <<Python>> as Server
+    [Agent Loop] <<Python>> as Agent
+    [Orchestrator] <<Python>> as Orch
+    [Tools] <<Python>> as Tools
+}
+
+database "Workspace" {
+    [File System] as FS
+    [Git Repo] as Git
+}
+
+UI <-> RPC
+RPC <-> Server : JSON-lines / Unix Socket
+Server <-> Agent
+Agent <-> Orch
+Agent <-> Tools
+Tools <-> FS
+Tools <-> Git
+
+cloud "LLM Provider" as Provider {
+    [Ollama / OpenAI] as LLM
+}
+
+Agent <-> LLM : HTTPS / Streaming
+
+@enduml

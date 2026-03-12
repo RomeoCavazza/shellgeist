@@ -1,0 +1,62 @@
+ShellGeist Technical Specification
+====================================
+
+Architecture Overview
+---------------------
+ShellGeist follows a decentralized architecture:
+1.  **Frontend (Neovim/Lua)**: Provides the UI (sidebar, diff view, review panel) and initiates requests.
+2.  **Backend (Python)**: Acts as the intelligent daemon. It manages the agent loop, LLM communication, and tool execution.
+3.  **Communication**: Uses JSON-lines over Unix Domain Sockets.
+
+---
+
+Module: backend/shellgeist/agent/loop.py
+----------------------------------------
+The core engine of the assistant. It orchestrates the flow from user goal to final response.
+
+### Key Variables
+*   `_MAX_HISTORY_OBS_CHARS` (2800): Cap for tool observations in LLM history.
+*   `_MAX_HISTORY_ASSISTANT_CHARS` (4000): Cap for assistant replies in history.
+*   `_PROTECTED_DOC_BASENAMES`: Files (README, LICENSE) requiring explicit intent for modification.
+
+### Core Functions
+*   `_is_write_file_placeholder(content, path)`: Detects if the model is sending lazy placeholders (e.g., "/* code here */").
+*   `_filter_single_target_tool_calls(...)`: Restricts tool operations to the `strict_target` in specialized turns.
+*   `Agent.run_task(goal, ...)`: Entry point for executing a user request.
+
+---
+
+Module: backend/shellgeist/agent/orchestrator.py
+------------------------------------------------
+Handles the parsing and classification of LLM outputs.
+
+### Key Functions
+*   `classify_model_turn(content)`: Decides if the LLM output is a tool call, a final response, or needs "salvage".
+*   `salvage_slope_to_tool_calls(content, ...)`: Converts raw code blocks or shell commands into tool calls if the model forgets XML tags.
+*   `decide_no_tool_action(...)`: Determines the next step when no tool call is detected (e.g., ask for status, finalize).
+
+---
+
+Module: backend/shellgeist/runtime/server.py
+--------------------------------------------
+Implements the Unix socket server.
+
+### Key Functions
+*   `RequestHandler.__call__(reader, writer)`: Handles incoming RPC calls from Neovim.
+
+---
+
+Module: backend/shellgeist/tools/
+---------------------------------
+*   `executor.py`: Orchestrates tool execution with error handling and retries.
+*   `fs.py`: Filesystem operations (`read_file`, `write_file`, `list_files`).
+*   `shell.py`: Command execution (`run_shell`, `exec_shell_session`).
+*   `edit.py`: Natural language file editing (`edit_file`).
+
+---
+
+Frontend: nvim/lua/shellgeist/
+------------------------------
+*   `sidebar.lua`: Manages the chat UI using `nui.nvim`.
+*   `rpc.lua`: Client-side implementation of the socket protocol.
+*   `conflict.lua`: Inline conflict resolution UI.

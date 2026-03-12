@@ -1,0 +1,35 @@
+@startuml agent_logic
+skinparam activity {
+    BackgroundColor White
+    BorderColor Black
+    ArrowColor Black
+}
+
+start
+:LoadContext;
+:ClassifyIntent;
+
+if (Intent Type?) then (Model)
+    :ModelDecide;
+    :ValidateBatch;
+else (Deterministic)
+    :DeterministicPath;
+endif
+
+:ExecuteBatch;
+
+repeat
+    :ObserveResult;
+    if (Success?) then (Yes)
+        :FinalizeTurn;
+        stop
+    else (No / Error)
+        :RepairOnce;
+        :ExecuteBatch;
+    endif
+backward:Retry;
+repeat while (Retry Limit?) is (Remaining)
+-> Exhausted;
+:FinalizeTurn;
+stop
+@enduml

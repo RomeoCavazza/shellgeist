@@ -1,0 +1,30 @@
+@startuml sequence
+actor User
+participant Neovim
+participant Sidebar
+participant "Daemon Server" as Server
+participant "Agent Loop" as Agent
+participant LLM
+participant Tools
+
+User -> Neovim : :SGAgent "fix bug"
+Neovim -> Server : Request (JSON goal)
+Server -> Agent : run_task(goal)
+
+loop LLM Cycle
+    Agent -> LLM : Prompt (history + schemas)
+    LLM -> Agent : Delta (streaming response)
+    Agent -> Sidebar : response_draft (UI updates)
+    
+    alt Tool Call Detected
+        Agent -> Tools : execute_tool_call(args)
+        Tools -> Agent : Result (stdout/stderr)
+        Agent -> Sidebar : observation (card UI)
+    else Final Answer
+        Agent -> Sidebar : response (done)
+    end
+end
+
+Agent -> Server : Task Result
+Server -> Neovim : RPC response
+@enduml
