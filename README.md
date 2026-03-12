@@ -21,9 +21,13 @@
   <a href="https://github.com/ollama/ollama"><img src="https://img.shields.io/badge/Ollama-compatible-000000" alt="Ollama" /></a>
 </p>
 
+<p align="center">
+  <img src="assets/shellgeist.png" alt="ShellGeist" width="720" style="display: block; margin-left: auto; margin-right: auto;" />
+</p>
+
 ---
 
-[Overview](#overview) • [Project structure](#project-structure) • [Research & Logic](#research--logic) • [Architecture](#architecture) • [Commands](#commands) • [License](#license)
+[Overview](#overview) • [Preview](#preview) • [Project structure](#project-structure) • [Research & Logic](#research--logic) • [Architecture](#architecture) • [Commands](#commands) • [License](#license)
 
 </div>
 
@@ -35,9 +39,13 @@ ShellGeist is an **academic-grade AI code assistant** for Neovim, designed as bo
 - **Agentic Autonomy**: Advanced logic for intent classification, deterministic shortcuts, and self-repairing loops.
 - **Academic Standards**: Clean modular architecture, complete technical specifications, and reproducible environments via Nix.
 
+---
+
+## Preview
+
+Check out ShellGeist in action through these different lenses.
+
 ````carousel
-![Main Chat Interface](assets/shellgeist.png)
-<!-- slide -->
 ![New File Creation](assets/new-file.png)
 <!-- slide -->
 ![Full Project Configuration](assets/full-config.png)
