@@ -15,6 +15,7 @@ from shellgeist.agent.orchestrator import (
     normalize_final_response,
     salvage_slope_to_tool_calls,
 )
+from shellgeist.agent.parsing.normalize import extract_trailing_after_last_fence
 from shellgeist.config import debug_enabled as _debug_enabled
 from shellgeist.llm import build_system_prompt, get_client, run_llm_stream_with_retry
 from shellgeist.runtime.session import (
@@ -112,6 +113,53 @@ def _looks_like_list_only_request(text: str) -> bool:
     has_list_marker = any(token in low for token in list_markers) or bool(re.match(r"^\s*(ls|liste|list)\b", low))
     has_directory_scope = any(token in low for token in ("répertoire", "dossier", "directory", "folder"))
     return has_list_marker and has_directory_scope
+
+
+def _looks_like_run_it_goal(text: str) -> bool:
+    """True if the user is asking to run/execute a script (e.g. 'exécute le', 'run it') without naming a file."""
+    low = (text or "").strip().lower().rstrip("?.!")
+    if not low or len(low) > 150:
+        return False
+    run_markers = (
+        "exécute le", "exécute-le", "execute le", "execute-le",
+        "run it", "run the script", "lance le", "lance-le",
+        "exécute le pour voir", "run it to see", "execute it",
+    )
+    if any(m in low for m in run_markers):
+        return True
+    if re.match(r"^\s*(exécute|execute|run)\s*(le|it)?\s*(pour voir|to see)?\s*$", low):
+        return True
+    return False
+
+
+# Regex to find last write_file path to a .py in assistant content
+_LAST_WRITE_FILE_PY_RE = re.compile(
+    r'"path"\s*:\s*"([^"]+\.py)"',
+    re.IGNORECASE,
+)
+# Regex to find .py filename in user message (e.g. error paste "File \".../terminal_cube.py\", line 84")
+_LAST_PY_IN_USER_RE = re.compile(
+    r"[\"']([A-Za-z0-9_]+\.py)[\"']",
+)
+
+
+def _last_py_file_from_history(history: list[dict[str, Any]]) -> str | None:
+    """Return the most recent .py file path from conversation: last write_file path in assistant messages, or last .py mentioned in user message."""
+    if not history:
+        return None
+    for msg in reversed(history):
+        role = (msg.get("role") or "").strip().lower()
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        if role == "assistant":
+            matches = list(_LAST_WRITE_FILE_PY_RE.finditer(content))
+            if matches:
+                return matches[-1].group(1).strip()
+        if role == "user":
+            for m in _LAST_PY_IN_USER_RE.finditer(content):
+                return m.group(1).strip()
+    return None
 
 
 def _goal_family(goal: str) -> str:
@@ -213,6 +261,26 @@ def _strict_single_target_path(goal: str) -> str | None:
     )
     if len(refs) == 1 and any(m in low for m in write_markers):
         return refs[0]
+    return None
+
+
+def _single_py_file_ref_from_goal(goal: str) -> str | None:
+    """Return the single .py file path mentioned in the goal, if exactly one. Generic: any project, any language.
+    Used to accept ```code``` slope when the model replies with a code block and the goal mentions one .py file."""
+    refs = _extract_file_references(goal or "")
+    py_refs = [r for r in refs if (r or "").lower().endswith(".py")]
+    return py_refs[0] if len(py_refs) == 1 else None
+
+
+def _infer_py_path_from_goal(goal: str) -> str | None:
+    """When the goal does not mention a .py file but describes a script (e.g. cube 3D, terminal cube),
+    infer a single default path so that ```python slope can still be converted to write_file."""
+    if not goal or not goal.strip():
+        return None
+    low = goal.strip().lower()
+    # Cube 3D / terminal cube → terminal_cube.py (common ask in specs)
+    if ("cube" in low and ("3d" in low or "3 d" in low or "terminal" in low)) or "terminal_cube" in low:
+        return "terminal_cube.py"
     return None
 
 
@@ -324,7 +392,14 @@ def _filter_single_target_tool_calls(
         name = tc.get("name") or ""
         args = tc.get("arguments", {}) or {}
         if name == "edit_file":
-            blocked.append(f"{name} -> use write_file for strict single-file rewrites")
+            path_val = _normalize_workspace_path(
+                str(args.get("path") or args.get("file") or ""),
+                root,
+            )
+            if path_val == target_rel:
+                allowed.append(tc)
+            else:
+                blocked.append(f"{name} -> {path_val or '(missing path)'}")
         elif name in ("write_file", "read_file"):
             path_val = _normalize_workspace_path(
                 str(args.get("path") or args.get("file") or args.get("file_path") or ""),
@@ -350,7 +425,7 @@ def _filter_single_target_tool_calls(
         feedback = (
             "POLICY_DENY: Strict single-file task. "
             f"Allowed target only: {target_rel}. "
-            "Use write_file/read_file on that file, "
+            "Use write_file, edit_file, or read_file on that file, "
             "and run_shell only for commands that execute or validate that target. "
             f"Blocked calls: {', '.join(blocked[:4])}."
         )
@@ -523,19 +598,36 @@ def _repair_guidance_for_failure(command: str, observation: str) -> str:
     obs_lower = (observation or "").lower()
     if "syntaxerror" in obs_lower:
         hints = []
+        if "parenthesized" in obs_lower or "cannot be parenthesized" in obs_lower:
+            hints.append("Python 3 only: tuple unpacking in function parameters is invalid (e.g. def f((x,y))). Use def f(x, y) or unpack inside the function body.")
         if "f-string" in obs_lower or "single '}'" in obs_lower:
             hints.append("En f-string, pour afficher une variable utilise {e} (un seul }); pour une accolade littérale utilise }}.")
         if "unmatched ')'" in obs_lower or "unmatched '}'" in obs_lower:
             hints.append("Vérifie que chaque ( a une ) correspondante et qu'il n'y a pas d'accolade ou parenthèse en trop.")
+        if "line continuation" in obs_lower or ("033" in (observation or "") and "syntaxerror" in obs_lower):
+            hints.append("Les séquences d'échappement (ex. \\033[H) doivent être dans une chaîne : print('\\033[H', end='') ou sys.stdout.write(chr(27)+'[H'), pas comme ligne seule.")
+        if "unterminated" in obs_lower or "line continuation" in obs_lower or "033" in (observation or ""):
+            hints.append("En repair : réécris le fichier **en entier** avec write_file(path, contenu_complet). Ne modifie pas les guillemets ni les séquences \\033 ou \\x1b dans les chaînes (pas de \\\" devant les quotes).")
         if hints:
             return " " + " ".join(hints)
     if "no such file or directory" in obs_lower or "errno 2" in obs_lower:
         return " Le fichier cible n'existe pas encore. Crée-le avec write_file puis relance la validation (py_compile / python3)."
+    if "nameerror" in obs_lower and ("not defined" in obs_lower or "forget to import" in obs_lower):
+        return " Pour un import manquant : utilise edit_file avec un diff qui ajoute la ligne d'import (ex. import shutil) au bon endroit."
     if "usage:" in obs_lower and "[exit_code=1]" in (observation or ""):
         return " La commande demandée s'exécute sans argument. Le script ne doit pas exiger d'argument (ex. pas de sys.argv obligatoire) ; il doit fonctionner avec un simple « python3 fichier.py »."
     if "[errno " in obs_lower or "no address associated" in obs_lower or "name or service not known" in obs_lower:
         return " Ne copie jamais le message d'erreur littéralement dans le code (ex. comme hostname ou chaîne). Corrige la logique du script : utilise un hostname valide, ou gère l'exception et affiche un message clair, ou exécute sans argument avec un comportement par défaut (ex. print('pong'))."
     return ""
+
+
+def _is_simple_fix_failure(observation: str) -> bool:
+    """True when the failure is typically fixed by a one-line or minimal change (e.g. add missing import)."""
+    low = (observation or "").lower()
+    if "nameerror" in low or "importerror" in low or "modulenotfounderror" in low:
+        if "not defined" in low or "forget to import" in low or "cannot import" in low:
+            return True
+    return False
 
 
 def _is_validation_failure_observation(observation: str) -> bool:
@@ -813,12 +905,15 @@ def _classify_turn(turn: TurnState, history: list[dict[str, Any]], goal: str, it
     respond_to_raw = (goal or "").strip() if (iteration == 0 and goal) else last_user_content
     respond_to = respond_to_raw.lower()
     read_target = _primary_goal_file_reference(respond_to_raw)
+    is_run_it = _looks_like_run_it_goal(respond_to_raw)
     return {
         "respond_to_raw": respond_to_raw,
         "respond_to": respond_to,
         "is_list_only_request": _looks_like_list_only_request(respond_to),
         "read_target": read_target,
         "next_requested_command": turn.next_requested_command(),
+        "is_run_it_request": is_run_it,
+        "run_it_script": _last_py_file_from_history(history) if is_run_it else None,
     }
 
 
@@ -830,6 +925,7 @@ def _build_deterministic_batch_if_possible(
     read_target: str | None,
     is_list_only_request: bool,
     next_requested_command: str | None,
+    run_it_script: str | None = None,
 ) -> tuple[list[dict[str, Any]] | None, dict[str, bool]]:
     last_is_user = bool(history and history[-1].get("role") == "user")
     flags = {
@@ -838,6 +934,7 @@ def _build_deterministic_batch_if_possible(
         "inject_simple_write": False,
         "inject_required_shell": False,
         "inject_repair_rerun": False,
+        "inject_run_it": False,
     }
     if not last_is_user:
         return None, flags
@@ -856,6 +953,15 @@ def _build_deterministic_batch_if_possible(
     if _looks_like_read_only_goal(respond_to) and read_target:
         flags["inject_read"] = True
         calls = [{"name": "read_file", "arguments": {"path": read_target}}]
+        turn.deterministic_tool_calls = calls
+        return calls, flags
+
+    if run_it_script and _looks_like_run_it_goal(respond_to):
+        flags["inject_run_it"] = True
+        cmd = f"python3 {run_it_script}"
+        if "timeout" in respond_to or "6s" in respond_to or "animation" in respond_to:
+            cmd = f"timeout 6s {cmd}"
+        calls = [{"name": "run_shell", "arguments": {"command": cmd}}]
         turn.deterministic_tool_calls = calls
         return calls, flags
 
@@ -1003,6 +1109,7 @@ class Agent:
                 read_target=turn_ctx["read_target"],
                 is_list_only_request=turn_ctx["is_list_only_request"],
                 next_requested_command=turn_ctx["next_requested_command"],
+                run_it_script=turn_ctx.get("run_it_script"),
             )
 
             if deterministic_calls:
@@ -1050,6 +1157,21 @@ class Agent:
                     )
                     if slope_calls:
                         tool_calls = slope_calls
+                        trailing = extract_trailing_after_last_fence(content_str)
+                        turn.slope_trailing_response = trailing.strip() or None
+                # When no strict_target but model replied with ```code``` and goal mentions exactly one .py file, accept slope (generic: any project)
+                if not tool_calls and re.search(r"```(?:python)?\s*[\s\S]*?(?:def |import |class |if __name__)", content_str):
+                    slope_target = _single_py_file_ref_from_goal(goal)
+                    if not slope_target:
+                        slope_target = _infer_py_path_from_goal(goal)
+                    if slope_target:
+                        slope_calls = salvage_slope_to_tool_calls(
+                            content_str, slope_target, self.root
+                        )
+                        if slope_calls:
+                            tool_calls = slope_calls
+                            trailing = extract_trailing_after_last_fence(content_str)
+                            turn.slope_trailing_response = trailing.strip() or None
 
             if turn.strict_target and not deterministic_calls and not tool_calls:
                 strict_protocol_feedback = _strict_tool_only_feedback(content_str, turn.strict_target)
@@ -1113,6 +1235,24 @@ class Agent:
                 tool_calls = tool_calls[:max_tools_per_turn]
 
             if not tool_calls:
+                # User asked "exécute le" but model replied with code block instead of run_shell → reject and ask for tool call
+                run_it_script = turn_ctx.get("run_it_script")
+                if (
+                    turn_ctx.get("is_run_it_request")
+                    and run_it_script
+                    and re.search(r"```", content_str or "")
+                ):
+                    await _discard_response_draft(ui, turn)
+                    feedback = (
+                        f"PROTOCOL_VIOLATION: The user asked to run the script. "
+                        f"Call run_shell with: python3 {run_it_script}. "
+                        "Do not output code in a markdown block or mix explanation with code; output only a single <tool_use> with run_shell."
+                    )
+                    self.history.append({"role": "user", "content": feedback})
+                    save_db_message(session_id, "user", feedback, log_type="context")
+                    _debug_log(f"Run-it rejection (code block instead of run_shell). Feedback: {feedback}")
+                    continue
+
                 decision = decide_no_tool_action(
                     content_str,
                     completion_blocker=_strict_completion_blocker(
@@ -1192,6 +1332,20 @@ class Agent:
                         if _looks_like_read_only_goal(goal):
                             await ui.emit_execution_event("error", obs, phase="done", meta={"final": True})
                             return {"ok": False, "status": "failed", "logs": logs, "error": obs}
+                        continue
+
+                # Block write_file without path or content: avoid Pydantic validation error, give clear hint
+                if func_name == "write_file":
+                    path_val = (args.get("path") or args.get("file") or args.get("file_path") or "").strip()
+                    content_val = args.get("content")
+                    if not path_val or content_val is None:
+                        obs = (
+                            'Error: write_file requires both "path" and "content". '
+                            'Example: {"path": "script.py", "content": "# your code here"}'
+                        )
+                        await ui.emit_execution_event("tool_result", obs, phase="tool_use", meta={"tool": func_name, "success": False})
+                        self.history.append({"role": "user", "content": f'<tool_observation name="{func_name}">\n{obs}\n</tool_observation>'})
+                        save_db_message(session_id, "user", self.history[-1]["content"], log_type="context")
                         continue
 
                 command_arg = str(args.get("command") or "").strip() if func_name in ("run_shell", "exec_shell_session") else ""
@@ -1348,6 +1502,9 @@ class Agent:
                         and command_arg == turn.failed_validation_command
                         and re.search(r"\btimeout\s+\d+[smh]?\s+python3\b", command_arg)
                     )
+                    if not validation_just_passed and "[preview_timeout_reached]" in (outcome.observation or ""):
+                        if _command_targets_strict_file(command_arg, turn.strict_target, self.root):
+                            validation_just_passed = True
                     if turn.failed_validation_command and command_arg == turn.failed_validation_command:
                         turn.failed_validation_command = None
                         turn.repair_attempts = 0
@@ -1373,11 +1530,31 @@ class Agent:
                 self.history.append({"role": "user", "content": obs})
                 save_db_message(session_id, "user", obs, log_type="context")
 
+                # When edit_file is rejected due to syntax, steer model toward write_file to avoid retry loop → BLOCKED_REPEAT
+                if (
+                    func_name == "edit_file"
+                    and not outcome.success
+                    and "syntax_error_after_edit" in (outcome.observation or "")
+                ):
+                    edit_feedback = (
+                        "L'édition a été rejetée car le fichier aurait une erreur de syntaxe. "
+                        "Utilise write_file pour remplacer tout le fichier avec un contenu corrigé, au lieu de réessayer edit_file."
+                    )
+                    self.history.append({"role": "user", "content": edit_feedback})
+                    save_db_message(session_id, "user", edit_feedback, log_type="context")
+
                 # Validation just passed (timeout Ns python3): complete immediately to avoid model re-running the same command in a loop
                 if validation_just_passed:
-                    final_response = _strict_success_response(turn.strict_target, turn.requested_commands)
+                    final_response = (
+                        normalize_final_response(turn.slope_trailing_response)
+                        if turn.slope_trailing_response
+                        else _strict_success_response(turn.strict_target, turn.requested_commands)
+                    )
                     self.history.append({"role": "assistant", "content": final_response})
-                    await ui.emit_execution_event("response", final_response, phase="done", meta={"final": True})
+                    await ui.emit_execution_event(
+                        "response", final_response, phase="done",
+                        meta={"final": True, "slope_trailing": bool(turn.slope_trailing_response)},
+                    )
                     return {"ok": True, "status": "completed", "logs": logs, "response": final_response}
 
                 if turn.strict_target and not outcome.success:
@@ -1415,8 +1592,13 @@ class Agent:
 
                         repair_feedback = (
                             f"REPAIR_REQUIRED: Validation failed for `{Path(turn.strict_target).name}`. "
-                            "Prochaine action : corrige l'erreur avec un seul **write_file** sur ce fichier, puis relance la même validation. "
-                            "N'appelle pas run_shell tant que le fichier n'est pas corrigé. Évite read_file en boucle ou d'autres outils inutiles. "
+                            + (
+                                "Prochaine action : pour une correction minime (ex. import manquant), privilégie **edit_file** avec un diff minimal (une ou quelques lignes). Sinon utilise **write_file**. Puis relance la même validation. "
+                                if _is_simple_fix_failure(outcome.observation)
+                                else "Prochaine action : corrige l'erreur avec un seul **write_file** sur ce fichier, puis relance la même validation. "
+                                "Réécris le fichier **en entier** (pas de modification partielle) ; ne modifie pas les séquences d'échappement (\\033, \\x1b) dans les chaînes. "
+                            )
+                            + "N'appelle pas run_shell tant que le fichier n'est pas corrigé. Évite read_file en boucle ou d'autres outils inutiles. "
                             "Tu peux lire la cible une fois si nécessaire, puis la réécrire avec write_file, puis relancer exactement la même validation."
                             + _repair_guidance_for_failure(command_arg, outcome.observation)
                         )
@@ -1424,9 +1606,16 @@ class Agent:
                         save_db_message(session_id, "user", repair_feedback, log_type="context")
 
                 if turn.can_finalize_strict():
-                    final_response = _strict_success_response(turn.strict_target, turn.requested_commands)
+                    final_response = (
+                        normalize_final_response(turn.slope_trailing_response)
+                        if turn.slope_trailing_response
+                        else _strict_success_response(turn.strict_target, turn.requested_commands)
+                    )
                     self.history.append({"role": "assistant", "content": final_response})
-                    await ui.emit_execution_event("response", final_response, phase="done", meta={"final": True})
+                    await ui.emit_execution_event(
+                        "response", final_response, phase="done",
+                        meta={"final": True, "slope_trailing": bool(turn.slope_trailing_response)},
+                    )
                     return {"ok": True, "status": "completed", "logs": logs, "response": final_response}
 
                 if _looks_like_read_only_goal(goal) and func_name == "read_file":
@@ -1434,9 +1623,16 @@ class Agent:
                     if _is_failed_read_observation(raw_obs):
                         await ui.emit_execution_event("error", raw_obs, phase="done", meta={"final": True})
                         return {"ok": False, "status": "failed", "logs": logs, "error": raw_obs}
-                    final_read = _summarize_read_observation(goal, path_val, raw_obs) + "\n\nStatus: DONE"
+                    final_read = (
+                        (normalize_final_response(turn.slope_trailing_response) + "\n\nStatus: DONE")
+                        if turn.slope_trailing_response
+                        else (_summarize_read_observation(goal, path_val, raw_obs) + "\n\nStatus: DONE")
+                    )
                     self.history.append({"role": "assistant", "content": final_read})
-                    await ui.emit_execution_event("response", final_read, phase="done", meta={"final": True})
+                    await ui.emit_execution_event(
+                        "response", final_read, phase="done",
+                        meta={"final": True, "slope_trailing": bool(turn.slope_trailing_response)},
+                    )
                     return {"ok": True, "status": "completed", "logs": logs, "response": final_read}
 
                 if abort_strict_turn:
@@ -1520,5 +1716,14 @@ class Agent:
             return {"ok": False, "status": "failed", "logs": logs, "error": summary}
 
         await _discard_response_draft(ui, turn)
-        await ui.emit_execution_event("response", last_response, phase="done", meta={"final": True})
+        # Prefer slope trailing prose when loop exhausted (e.g. slope wrote file but we didn't hit can_finalize_strict)
+        final_response = (
+            normalize_final_response(turn.slope_trailing_response)
+            if turn.slope_trailing_response
+            else last_response
+        )
+        await ui.emit_execution_event(
+            "response", final_response, phase="done",
+            meta={"final": True, "slope_trailing": bool(turn.slope_trailing_response)},
+        )
         return {"ok": True, "status": "stopped", "logs": logs}

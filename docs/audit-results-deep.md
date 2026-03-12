@@ -1,4 +1,11 @@
-# Audit approfondi — docs/results.md (run avec README sauvegardé)
+# Audit approfondi — runs passés (détail)
+
+**Doc principale** : **`AUDIT.md`** — audit technique unifié (flux, outils, anti-slop, dernier run).  
+**Dernier run** : **`results.md`** — transcript + section « Audit / Verdicts » en bas.
+
+Ce fichier conserve l’analyse détaillée d’anciens runs (syntaxe, bilan utilisateur, enchaînements d’outils) et les correctifs section 7 (détection succès/échec run_shell). Pour les verdicts à jour et la structure des docs, voir AUDIT.md et results.md.
+
+---
 
 ## Contexte
 
@@ -91,3 +98,39 @@ Les correctifs 1–3 ci‑dessus sont implémentables dans le backend (loop.py) 
 ## 7. Détection succès / échec run_shell
 
 Quand un script exit 0 mais imprime une erreur (ex. `[Errno -5] No address associated with hostname`), on ne renvoyait pas `[exit_code=]` donc on marquait succès à tort. **Correctif** : `is_failed_result` traite comme échec les sorties contenant `[errno `, `no address associated`, `name or service not known`, `traceback`, `syntaxerror`, etc. Hint repair : ne pas copier le message d’erreur littéralement dans le code.
+
+---
+
+## 8. Run actuel (results.md) — audit approfondi et patchs
+
+Référence : **`docs/results.md`** (transcript + tableau Audit / Verdicts en bas). Run globalement excellent ; le LLM a encore des difficultés ciblées.
+
+### 8.1 Bilan par scénario (synthèse)
+
+| # | Scénario | Résultat | Cause racine / remarque |
+|---|----------|----------|--------------------------|
+| 1–4 | hey, list racine/backend, read loop.py | OK | — |
+| 5 | Crée ping.py puis exécute python3 ping.py | OK | write_file + run_shell, contenu propre. |
+| 6 | Réécris ping.py puis exécute | OK (artefact) | Concat résiduel +print('pong') dans le diff ; exécution OK. |
+| 7 | cube.py simple + py_compile + python3 | Partiel | write_file OK ; py_compile et python3 non exécutés. Consigne prompt pas suivie. |
+| 8 | Expert cube 3D sans dépendance | Partiel puis cassé | (1) Premier write_file OK. (2) write_file avec args vides → Pydantic. (3) Repair tronque + sur-échappe guillemets → SyntaxError. |
+
+### 8.2 Causes racines
+
+1. **write_file avec arguments vides** : modèle émet parfois {} ou sans path/content. Intercepter avant l'appel et renvoyer un message clair.
+2. **Repair qui dégrade** : write_file en repair avec contenu partiel et sur-échappement. Rappeler : fichier en entier, ne pas modifier les échappements.
+3. **py_compile + python3** : renforcer la règle "do not stop after write_file when they asked for validation".
+
+### 8.3 Patchs appliqués
+
+| Problème | Fichier | Correction |
+|----------|---------|------------|
+| write_file sans path/content | loop.py | Bloc avant execute_tool_call : si write_file et (path vide ou content absent), observation claire, pas d'appel. |
+| write_file ValidationError | base.py | Message dédié pour write_file dans except ValidationError. |
+| Repair fichier en entier + échappements | loop.py | REPAIR_REQUIRED : ajout "Réécris le fichier en entier ; ne modifie pas les séquences \\033, \\x1b". |
+| Hint repair SyntaxError/échappement | loop.py | _repair_guidance_for_failure : hint "réécris en entier, pas de backslash-quote devant les quotes". |
+| py_compile + python3 | prompt.py | Règle 6 : "you must run both… Do not stop after write_file when they asked for validation". |
+
+### 8.4 Pistes restantes
+
+Dérive write_file partiel (refuser si contenu beaucoup plus court que fichier actuel ?). Dés-échappement heuristique dans contenu Python (à évaluer).

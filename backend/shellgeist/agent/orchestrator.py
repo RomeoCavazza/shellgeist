@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from shellgeist.agent.parsing.json_utils import loads_obj
-from shellgeist.agent.parsing.normalize import strip_leading_code_fence, strip_fences
+from shellgeist.agent.parsing.normalize import strip_leading_code_fence, strip_fences, normalize_write_file_content
 from shellgeist.agent.parsing.parser import parse_canonical_tool_use, parse_xml_tool_use
 
 
@@ -142,7 +142,7 @@ def _normalize_tool_payload(obj: Any) -> list[dict[str, Any]]:
                     if isinstance(p, str) and p.strip():
                         args["path"] = p
                 if isinstance(args.get("content"), str):
-                    args["content"] = strip_fences(args["content"])
+                    args["content"] = normalize_write_file_content(args["content"])
             elif tool_name == "run_shell":
                 if "command" not in args:
                     cmd = args.get("cmd") or args.get("script")
@@ -164,7 +164,7 @@ def _normalize_tool_payload(obj: Any) -> list[dict[str, Any]]:
             continue
         if isinstance(v, dict):
             if mapped in ("write_file", "edit_file") and isinstance(v.get("content"), str):
-                v = {**v, "content": strip_fences(v["content"])}
+                v = {**v, "content": normalize_write_file_content(v["content"])}
             calls.append({"name": mapped, "arguments": v})
         elif isinstance(v, str):
             # Natural shorthand for shell-like tools

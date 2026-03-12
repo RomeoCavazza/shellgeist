@@ -50,6 +50,54 @@ def strip_fences(s: str) -> str:
     return s
 
 
+# Trailing junk that LLMs sometimes append to write_file content (protocol / JSON bleed)
+# Match only at end: }} or }}..., or a final line "Status: DONE" / "Status: FAILED..."
+_WRITE_FILE_JUNK_RE = re.compile(
+    r"(?:\s*\}\s*\}+|\s*[\n\r]+\s*Status:\s*DONE\s*\.?\s*|\s*[\n\r]+\s*Status:\s*FAILED\s*:?\s*[^\n]*)\s*$",
+    re.IGNORECASE,
+)
+
+
+def normalize_write_file_content(content: str) -> str:
+    """Strip markdown fences and protocol junk from write_file content.
+
+    - Leading ```python or ``` → removed (content only).
+    - Trailing }} or }}..., Status: DONE, Status: FAILED... → removed.
+    Use for every write_file payload so that when the model sends code in a block
+    or bleeds protocol into content, we still write clean code.
+    """
+    s = (content or "").strip()
+    if not s:
+        return s
+    s = strip_fences(s)
+    for _ in range(3):
+        prev = s
+        s = _WRITE_FILE_JUNK_RE.sub("", s).strip()
+        if s == prev:
+            break
+    return s
+
+
+def extract_trailing_after_last_fence(content: str) -> str:
+    """Return the text after the last closing markdown code fence (```).
+    Used when the model outputs code + prose: we run the code as write_file, then show the prose as the assistant response."""
+    if not content or not isinstance(content, str):
+        return ""
+    s = content.strip()
+    # Find last occurrence of a line that closes a fence (e.g. \n``` or \n```\n)
+    close_match = list(re.finditer(r"\n```\s*$", s, re.MULTILINE))
+    if not close_match:
+        close_match = list(re.finditer(r"\n```\s*(?=\n|$)", s))
+    if not close_match:
+        return ""
+    last = close_match[-1]
+    after = s[last.end() :].strip()
+    # Remove trailing <tool_use>...</tool_use> and Status lines
+    after = re.sub(r"\s*<tool_use>[\s\S]*$", "", after, flags=re.IGNORECASE)
+    after = re.sub(r"\n?\s*Status:\s*(?:DONE|FAILED)[^\n]*\s*$", "", after, flags=re.IGNORECASE)
+    return after.strip()
+
+
 def strip_leading_code_fence(text: str) -> str:
     """Remove one leading markdown code block (e.g. ```python\\n...\\n```) so that
     <tool_use> or other content after it is found by parsers.

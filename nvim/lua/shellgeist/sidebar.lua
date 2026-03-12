@@ -1481,6 +1481,14 @@ function M.append_text(text, msg_type, meta)
     if M._draft_response_start ~= nil then
       clear_draft_response()
     end
+    -- When slope: backend sent prose to show below tool results; never replace a previous block, just append
+    if meta.slope_trailing then
+      local prose = strip_status_lines(sanitize(text))
+      if prose ~= "" then
+        render_response(text)
+      end
+      return
+    end
     -- When this is the final response after streaming, replace the streamed block instead of adding a duplicate
     if meta.final and M.chat and buf_valid(M.chat.bufnr) then
       local ok, line_count = pcall(vim.api.nvim_buf_line_count, M.chat.bufnr)
@@ -1519,6 +1527,11 @@ function M.append_text(text, msg_type, meta)
               -- Hide tool-only block: remove assistant header + content + separator
               pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_assistant_idx - 1, last_sep_idx, false, {})
               scroll_bottom()
+              -- When slope: backend sent prose in "response" (e.g. "Voici le contenu..."); show it below the tool results instead of overwriting
+              local prose = strip_status_lines(sanitize(text))
+              if prose ~= "" and not content_is_only_tool_use(prose) then
+                render_response(text)
+              end
               return
             end
           end

@@ -175,6 +175,7 @@ class TurnState:
     draft_response_id: str = ""
     draft_response_visible: bool = False
     deterministic_tool_calls: list[dict[str, Any]] | None = None
+    slope_trailing_response: str | None = None  # When slope (code block → write_file), prose after the last ```
 
     def __post_init__(self) -> None:
         if self.requested_commands is None:

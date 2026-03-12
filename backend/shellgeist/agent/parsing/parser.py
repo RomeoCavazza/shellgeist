@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from shellgeist.agent.parsing.json_utils import loads_obj
-from shellgeist.agent.parsing.normalize import strip_fences
+from shellgeist.agent.parsing.normalize import strip_fences, normalize_write_file_content
 
 # Opening: <tool_use>, <tool_request>, <tool_call>, <tool call>, <tool_invocation>, <tool>
 # Optionally with attributes (e.g. name="run_shell")
@@ -344,7 +344,7 @@ def _normalize_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     if isinstance(p, str) and p.strip():
                         args["path"] = p
                 if isinstance(args.get("content"), str):
-                    args["content"] = strip_fences(args["content"])
+                    args["content"] = normalize_write_file_content(args["content"])
             elif low == "run_shell":
                 if "command" not in args:
                     cmd = args.get("cmd") or args.get("script")

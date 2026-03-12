@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from shellgeist.agent.parsing.normalize import normalize_write_file_content
 from shellgeist.tools.base import registry
 from shellgeist.runtime.paths import (
     DEFAULT_IGNORED_DIRS,
@@ -100,6 +101,8 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
     p = resolve_repo_path(Path(root), target)
     p.parent.mkdir(parents=True, exist_ok=True)
 
+    # Strip markdown fences (```python) and protocol junk (}}}, Status: DONE) so we write clean code
+    content = normalize_write_file_content(content)
     # Normalize line endings so LLM \r\n or stray \r don't cause SyntaxError (e.g. "import time\r")
     content = content.replace("\r\n", "\n").replace("\r", "\n")
     # Fix double-escaped newlines from LLMs (literal \n instead of real newlines)

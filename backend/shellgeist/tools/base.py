@@ -29,6 +29,8 @@ class Tool:
                     return "Error: read_file requires argument 'path'. Example: {\"path\": \"README.md\"}."
                 if self.name == "list_files" and ("directory" in err.lower() or "missing" in err.lower()):
                     return "Error: list_files requires argument 'directory'. Example: {\"directory\": \".\"}."
+                if self.name == "write_file" and ("path" in err.lower() or "content" in err.lower() or "missing" in err.lower()):
+                    return "Error: write_file requires both 'path' and 'content'. Example: {\"path\": \"script.py\", \"content\": \"# code here\"}."
                 return f"Error: Validation failed for {self.name}. {e}"
             except Exception as e:
                 return f"Error: Validation failed for {self.name}. {e}"
