@@ -47,20 +47,113 @@ Rapport complet : [**cloc-report.md**](./cloc-report.md).
 ### Cycle de Vie de l'Agent
 Le schéma suivant détaille comment l'agent bascule entre décisions probabilistes et chemins déterministes.
 
-![Agent Logic](diagrams/png/agent_logic.png)
+```mermaid
+flowchart TD
+    Start([Start]) --> LoadContext[LoadContext]
+    LoadContext --> ClassifyIntent[ClassifyIntent]
+    
+    ClassifyIntent --> IsModel{Intent Type?}
+    IsModel -- Model --> ModelDecide[ModelDecide]
+    ModelDecide --> VB[ValidateBatch]
+    IsModel -- Deterministic --> DP[DeterministicPath]
+    
+    VB --> EB[ExecuteBatch]
+    DP --> EB
+    
+    EB --> OR[ObserveResult]
+    OR --> IsSuccess{Success?}
+    
+    IsSuccess -- Yes --> FT1[FinalizeTurn]
+    FT1 --> Stop([Stop])
+    
+    IsSuccess -- No / Error --> RepairOnce[RepairOnce]
+    RepairOnce --> EB2[ExecuteBatch]
+    EB2 --> RetryCheck{Retry Limit?}
+    
+    RetryCheck -- Remaining --> OR
+    RetryCheck -- Exhausted --> FT2[FinalizeTurn]
+    FT2 --> Stop
+```
 
 ### Architecture Système
 Couplage lâche entre le daemon Python et le plugin Lua.
 
-![Architecture](diagrams/png/architecture.png)
+```mermaid
+graph LR
+    subgraph NV ["Frontend (Neovim)"]
+        UI["Sidebar UI (Lua)"]
+        RPC["RPC Client (Lua)"]
+        Conflict["Conflict Resolver (Lua)"]
+    end
+    
+    subgraph BE ["Backend (Daemon)"]
+        Server["Server (Python)"]
+        Agent["Agent Loop (Python)"]
+        Orch["Orchestrator (Python)"]
+        Tools["Tools (Python)"]
+    end
+    
+    subgraph WS ["Workspace"]
+        FS[("File System")]
+        Git[("Git Repo")]
+    end
+    
+    subgraph LLM ["LLM Provider"]
+        LLM_Node["Ollama / OpenAI"]
+    end
+    
+    UI <--> RPC
+    RPC <-->|JSON-lines / Unix Socket| Server
+    Server <--> Agent
+    Agent <--> Orch
+    Agent <--> Tools
+    Tools <--> FS
+    Tools <--> Git
+    Agent <-->|HTTPS / Streaming| LLM_Node
+```
+
+### Séquence d'Éxécution
+Flux de données typique lors d'une requête utilisateur.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Neovim
+    participant Sidebar
+    participant Server as Daemon Server
+    participant Agent as Agent Loop
+    participant LLM
+    participant Tools
+    
+    User->>Neovim: :SGAgent "fix bug"
+    Neovim->>Server: Request (JSON goal)
+    Server->>Agent: run_task(goal)
+    
+    loop LLM Cycle
+        Agent->>LLM: Prompt (history + schemas)
+        LLM-->>Agent: Delta (streaming response)
+        Agent->>Sidebar: response_draft (UI updates)
+        
+        alt Tool Call Detected
+            Agent->>Tools: execute_tool_call(args)
+            Tools-->>Agent: Result (stdout/stderr)
+            Agent->>Sidebar: observation (card UI)
+        else Final Answer
+            Agent->>Sidebar: response (done)
+        end
+    end
+    
+    Agent->>Server: Task Result
+    Server->>Neovim: RPC response
+```
 
 ---
 
 ## 4. Diagrammes (PlantUML)
 
-Sources : `diagrams/*.puml`. Exports : [**diagrams/png/**](./diagrams/png/).
+Sources : `diagrams/*.puml`. Les sources sont conservées pour archive, mais les diagrammes ci-dessus utilisent Mermaid pour un rendu dynamique.
 
-Pour régénérer les diagrammes :
+Pour régénérer les images PNG (optionnel) :
 ```bash
 nix shell nixpkgs#plantuml -c plantuml -tpng -odocs/diagrams/png docs/diagrams/*.puml
 ```
