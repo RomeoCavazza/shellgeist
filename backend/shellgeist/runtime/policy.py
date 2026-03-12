@@ -144,6 +144,8 @@ class LoopGuard:
                 cmd = (args.get("command") or "").strip()
                 if ".py" in cmd or "python" in cmd:
                     hint = " Use 'python3 <your_script>.py'. This call was blocked after too many repeats."
+            elif tool_name == "read_file":
+                hint = " You have already read this file. To complete the task, call write_file(path, content) with the full file content instead of reading again."
             return LoopGuardVerdict.BLOCK, f"BLOCKED_REPEAT_TOOL: {tool_name} repeated {count} times." + hint
         
         return LoopGuardVerdict.ALLOW, ""

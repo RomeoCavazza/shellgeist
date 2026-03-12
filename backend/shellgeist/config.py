@@ -42,8 +42,13 @@ def shellgeist_model() -> str:
     return _env("SHELLGEIST_MODEL", "qwen2.5-coder:7b")
 
 
+def max_tokens() -> int:
+    """Max tokens to generate (Ollama/OpenAI). 0 = use provider default. Set to 8192+ for long write_file (e.g. full scripts)."""
+    return _env_int("SHELLGEIST_MAX_TOKENS", 0)
+
+
 def shellgeist_model_fallback_keywords() -> list[str]:
-    return _env_list("SHELLGEIST_MODEL_FALLBACK_KEYWORDS", ["coder", "qwen", "llama", "mistral"])
+    return _env_list("SHELLGEIST_MODEL_FALLBACK_KEYWORDS", ["coder", "qwen", "llama", "mistral", "deepseek"])
 
 
 # --- Timeouts ---

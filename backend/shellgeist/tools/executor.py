@@ -59,11 +59,14 @@ async def execute_tool_call(
     async def _run():
         return tool.execute(**args, root=root)
 
-    res = await retry_engine.run_async(
-        key=f"tool:{func_name}",
-        operation=lambda _: _run(),
-        classify_result=lambda r: ("transient" if "timeout" in str(r).lower() else None, "")
-    )
+    try:
+        res = await retry_engine.run_async(
+            key=f"tool:{func_name}",
+            operation=lambda _: _run(),
+            classify_result=lambda r: ("transient" if "timeout" in str(r).lower() else None, "")
+        )
+    except Exception as exc:
+        return ToolExecutionOutcome(kind="observation", func_name=func_name, observation=f"Error: {exc}")
     
     res_str = _observation_string(res, func_name)
     loop_guard.record_outcome(func_name, args, f"Error: read_file_failed" if _tool_failed(func_name, res_str) else res_str)
@@ -88,5 +91,10 @@ def _observation_string(res: Any, func_name: str) -> str:
                 return f"Successfully applied to {res.get('file', '?')}."
             err = res.get("error", "unknown")
             detail = res.get("detail", "")
+            if err == "guard_blocked" and detail == "syntax_error_after_edit":
+                return (
+                    "Edit rejected: the change would introduce a syntax error. "
+                    "Use write_file with the full file content instead of edit_file."
+                )
             return f"Error: {err}" + (f" — {detail}" if detail else "")
     return str(res)

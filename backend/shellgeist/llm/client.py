@@ -13,6 +13,7 @@ from typing import Any
 from shellgeist.config import (
     debug_enabled as _debug_enabled,
     http_timeout,
+    max_tokens as _max_tokens,
     models_list_timeout,
     models_probe_timeout,
     stream_idle_timeout,
@@ -48,6 +49,9 @@ class _ChatCompletions:
             payload["tools"] = tools
         if tool_choice:
             payload["tool_choice"] = tool_choice
+        n = _max_tokens()
+        if n > 0:
+            payload["max_tokens"] = n
 
         req = urllib.request.Request(
             url,
@@ -200,6 +204,9 @@ async def create_stream(
 
     url = f"{base_url.rstrip('/')}/chat/completions"
     payload = {"model": model, "messages": messages, "stream": True}
+    n = _max_tokens()
+    if n > 0:
+        payload["max_tokens"] = n
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",

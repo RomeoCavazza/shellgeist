@@ -190,6 +190,8 @@ def resolve_existing_repo_file(
     hint = ""
     if suggestions:
         hint = f" Possible matches: {', '.join(suggestions)}."
+    elif requested_name and ("/" in requested or requested.strip().startswith("~")):
+        hint = f" Use a relative path from workspace root, e.g. '{requested_name}'."
     elif requested_name:
-        hint = f" Hint: try a relative path like '{requested_name}' instead."
+        hint = " No file with that name in the workspace."
     raise FileNotFoundError(f"File not found: {requested}.{hint}")

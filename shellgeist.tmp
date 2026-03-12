@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# ShellGeist Wrapper Script
+# Automatically handles Nix environment if necessary.
+# When a flake is present, prefer "nix develop --command shellgeist" so the
+# daemon uses the built app and does not depend on PYTHONPATH (avoids
+# "No module named shellgeist.cli" when the env's python3 is a Nix wrapper).
+
+get_script_dir() {
+     local SOURCE="${BASH_SOURCE[0]}"
+     while [ -h "$SOURCE" ]; do
+          local S_DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+          SOURCE="$(readlink "$SOURCE")"
+          [[ $SOURCE != /* ]] && SOURCE="$S_DIR/$SOURCE"
+     done
+     echo "$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+}
+DIR="$(get_script_dir)"
+
+# 1. Flake available? Use nix develop and the built shellgeist (no PYTHONPATH).
+#    This avoids Nix python wrappers overwriting PYTHONPATH when Neovim spawns
+#    the daemon from a different env (e.g. after reopen or new chat).
+if [ -f "$DIR/flake.nix" ] && command -v nix >/dev/null 2>&1; then
+    exec nix develop "$DIR" --command shellgeist "$@"
+fi
+
+# 2. Already in a working env (venv, system packages)? Use PYTHONPATH.
+#    Skip if python3 is a Nix wrapper (path contains /nix/store) so we don't
+#    get "No module named shellgeist.cli" when the wrapper overwrites PYTHONPATH.
+PYTHON_PATH="$(command -v python3 2>/dev/null)"
+if [ -n "$PYTHON_PATH" ] && [ -x "$PYTHON_PATH" ]; then
+    if ! echo "$PYTHON_PATH" | grep -q "/nix/store/"; then
+        if "$PYTHON_PATH" -c "import pydantic, anyio" >/dev/null 2>&1; then
+            exec env PYTHONPATH="$DIR/backend" "$PYTHON_PATH" -m shellgeist.cli "$@"
+        fi
+    fi
+fi
+
+# 3. Legacy fallback: ad-hoc nix-shell
+if command -v nix-shell >/dev/null 2>&1; then
+    CMD="export PYTHONPATH=$DIR/backend; python3 -m shellgeist.cli"
+    for arg in "$@"; do
+        CMD="$CMD \"$arg\""
+    done
+    exec nix-shell -p "python3.withPackages (p: with p; [ pydantic anyio ])" --run "$CMD"
+fi
+
+echo "Error: python3 with pydantic+anyio not found, and nix is unavailable." >&2
+exit 1

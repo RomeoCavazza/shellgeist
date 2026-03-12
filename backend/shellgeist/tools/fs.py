@@ -103,6 +103,15 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
 
     # Strip markdown fences (```python) and protocol junk (}}}, Status: DONE) so we write clean code
     content = normalize_write_file_content(content)
+
+    # REJECT if content looks like a diff (LLM is hallucinating tool behavior)
+    if "--- a/" in content or "+++ b/" in content or "@@ -" in content:
+        raise ValueError(
+            "REJECTED: write_file 'content' looks like a diff. "
+            "You must provide the COMPLETE file content, not a diff. "
+            "Use edit_file if you want to apply a small change, or write_file with the full text."
+        )
+
     # Normalize line endings so LLM \r\n or stray \r don't cause SyntaxError (e.g. "import time\r")
     content = content.replace("\r\n", "\n").replace("\r", "\n")
     # Fix double-escaped newlines from LLMs (literal \n instead of real newlines)
@@ -117,6 +126,16 @@ def write_file(path: str | None = None, content: str = "", root: str = "", file_
             old_text = read_repo_file(p)
         except Exception:
             pass
+
+    # PYTHON SYNTAX CHECK (Guard)
+    if target.endswith(".py"):
+        try:
+            compile(content, target, "exec")
+        except SyntaxError as exc:
+            raise ValueError(
+                f"REJECTED: {target} has a syntax error: {exc}. "
+                "Fix the code and try again. Ensure proper indentation and matching brackets."
+            ) from None
 
     # Skip write if file already has the exact same content
     if existed and old_text == content:

@@ -351,8 +351,12 @@ def salvage_slope_to_tool_calls(
             if "<tool_use>" in inner or '"name":' in inner and '"write_file"' in inner:
                 continue
             if re.search(r"\b(?:def |import |class |if __name__)", inner):
+                # HARDEN: Skip if it looks like a diff or is too fragmented
+                if inner.startswith("---") or inner.startswith("@@ ") or "\n+" in inner or "\n-" in inner:
+                    continue
                 code = strip_fences(inner)
-                if code and len(code) > 20:
+                # Require at least 5 lines or substantive content to be a full file
+                if code and len(code) > 60 and code.count("\n") > 3:
                     calls.append({
                         "name": "write_file",
                         "arguments": {"path": strict_target, "content": code},

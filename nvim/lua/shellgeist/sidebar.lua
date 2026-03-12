@@ -350,13 +350,21 @@ end
 local function render_action(text, meta)
   local tool = (meta and meta.tool) or ""
   local file = (meta and meta.file) or ""
+  if file == "" and meta and meta.args then
+    file = meta.args.path or meta.args.file or meta.args.file_path or ""
+  end
   local label = tool
   if file ~= "" then label = label .. " " .. file end
   -- Compact inline with pending state; observation will update this line to success/error.
   local desc = compact(text, 120)
   desc = desc:gsub("^Calling:%s*", "")
-  local line = "  → " .. label .. "  Running..."
-  if desc ~= "" and desc ~= tool then line = "  → " .. label .. "  Running...  " .. desc end
+  if (tool == "edit_file" or tool == "edit") and meta and meta.args and (meta.args.instruction or meta.args.old_string) then
+    local raw = meta.args.instruction or meta.args.old_string or ""
+    desc = raw:sub(1, 70)
+    if #raw > 70 then desc = desc .. "…" end
+  end
+  local line = "│  → " .. label .. "  Running..."
+  if desc ~= "" and desc ~= tool then line = "│  → " .. label .. "  Running...  " .. desc end
   local start = buf_append({ line })
   if start then
     hl_range(start, 1, "SGRunning")
@@ -551,7 +559,7 @@ local function render_observation(text, meta)
   if pending and pending_idx then
     table.remove(M._pending_actions, pending_idx)
     local summary = is_err and "KO" or "OK"
-    local line = (is_err and "  ✗ " or "  ✓ ") .. pending.label .. "  " .. summary
+    local line = (is_err and "│  ✗ " or "│  ✓ ") .. pending.label .. "  " .. summary
     pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, pending.line, pending.line + 1, false, { line })
     hl_range(pending.line, 1, "SGCardBody")
     local symbol = is_err and "✗" or "✓"
@@ -571,6 +579,8 @@ local function render_observation(text, meta)
       and tool_name ~= "exec_shell_session"
       and tool_name ~= "list_files"
       and tool_name ~= "read_file"
+      and tool_name ~= "edit_file"
+      and tool_name ~= "write_file"
       and not is_err
     then
       scroll_bottom()
@@ -1437,10 +1447,12 @@ function M.append_text(text, msg_type, meta)
               table.insert(content_lines, line_list[j] or "")
             end
             local content = table.concat(content_lines, "\n")
+            -- Keep streamed tool payload visible (e.g. edit_file JSON) instead of removing it
             if content_is_only_tool_use(content) then
-              pcall(vim.api.nvim_buf_set_lines, M.chat.bufnr, last_assistant_idx - 1, line_count, false, {})
-              scroll_bottom()
-              -- fall through to dispatch (do not add separator)
+              -- Do not clear the block; add separator so user sees what was generated
+              local sep = buf_append({ "───────────────────────────────────────────" })
+              if sep then hl_range(sep, 1, "SGCardBorder") end
+              buf_append({ "" })
             else
               local sep = buf_append({ "───────────────────────────────────────────" })
               if sep then hl_range(sep, 1, "SGCardBorder") end
@@ -1546,6 +1558,22 @@ function M.append_text(text, msg_type, meta)
     render_thinking(text)
   elseif msg_type == "action" then
     render_action(text, meta)
+  elseif msg_type == "history_observation" then
+    -- Tool result loaded from history: show timeline line + observation card (no pending action)
+    local tool = (meta and meta.tool) or ""
+    local label = tool
+    if tool ~= "" then
+      local line = "│  ✓ " .. label .. "  OK"
+      local start = buf_append({ line })
+      if start then
+        hl_range(start, 1, "SGCardBody")
+        local symbol_col = line:find("✓", 1, true)
+        if symbol_col then
+          hl_partial(start, symbol_col - 1, symbol_col - 1 + 1, "SGSuccess")
+        end
+      end
+    end
+    render_observation(text, meta)
   elseif msg_type == "code" then
     render_code(text, meta)
   elseif msg_type == "observation" then

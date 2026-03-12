@@ -681,7 +681,7 @@ def run_shell(command: str, root: str, **kwargs: Any) -> str:
     if is_blocked(cmd):
         return "Blocked: unsafe command pattern detected."
 
-    # Scripts that might run forever (e.g. cube.py animation): use shorter timeout unless user already wrapped with timeout Ns
+    # Scripts that might run forever (e.g. animation): use shorter timeout unless user already wrapped with timeout Ns
     run_timeout = 60
     if re.search(r"\bpython3\b.*\.py", cmd) and not re.search(r"\btimeout\s+\d+[smh]?\s+", cmd):
         run_timeout = 15
@@ -702,7 +702,7 @@ def run_shell(command: str, root: str, **kwargs: Any) -> str:
         )
         out = p.stdout or ""
         if p.returncode != 0:
-            # Accept timeout previews even with env prefixes, e.g. "TERM=dumb timeout 6s python3 cube.py"
+            # Accept timeout previews even with env prefixes, e.g. "TERM=dumb timeout 6s python3 script.py"
             if p.returncode == 124 and re.search(r"(^|\s)timeout\s+\d+[smh]?\s+", cmd):
                 suffix = "" if out.endswith("\n") or out == "" else "\n"
                 return f"{out}{suffix}[preview_timeout_reached]"
@@ -855,7 +855,7 @@ def list_shell_sessions(root: str = "", **kwargs: Any) -> str:
 @registry.register(
     description=(
         "Run a one-shot Python command inside a Nix environment with optional Python and system packages. "
-        "The 'command' argument must be a FULL shell command, e.g. 'python3 cube.py' or 'python3 -c \"print(1)\"'. "
+        "The 'command' argument must be a FULL shell command, e.g. 'python3 script.py' or 'python3 -c \"print(1)\"'. "
         "Do NOT pass only arguments like '-c \"...\"' — the shell would try to run a binary named -c and fail."
     ),
     input_model=RunNixPythonInput,
@@ -877,7 +877,7 @@ def run_nix_python(
     # command must be a full command (e.g. python3 script.py), not just arguments
     if cmd.strip().startswith("-c ") or re.match(r"^\s*-\w+\s", cmd):
         return (
-            "Error: run_nix_python 'command' must be a full command, e.g. 'python3 cube.py' or 'python3 -c \"print(1)\"'. "
+            "Error: run_nix_python 'command' must be a full command, e.g. 'python3 script.py' or 'python3 -c \"print(1)\"'. "
             "You passed something like '-c ...' which the shell tries to run as a binary. Use 'python3 -c \"...\"' instead."
         )
 

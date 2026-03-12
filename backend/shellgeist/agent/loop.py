@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -137,7 +138,7 @@ _LAST_WRITE_FILE_PY_RE = re.compile(
     r'"path"\s*:\s*"([^"]+\.py)"',
     re.IGNORECASE,
 )
-# Regex to find .py filename in user message (e.g. error paste "File \".../terminal_cube.py\", line 84")
+# Regex to find .py filename in user message (e.g. error paste "File \".../script.py\", line 84")
 _LAST_PY_IN_USER_RE = re.compile(
     r"[\"']([A-Za-z0-9_]+\.py)[\"']",
 )
@@ -273,14 +274,9 @@ def _single_py_file_ref_from_goal(goal: str) -> str | None:
 
 
 def _infer_py_path_from_goal(goal: str) -> str | None:
-    """When the goal does not mention a .py file but describes a script (e.g. cube 3D, terminal cube),
-    infer a single default path so that ```python slope can still be converted to write_file."""
-    if not goal or not goal.strip():
-        return None
-    low = goal.strip().lower()
-    # Cube 3D / terminal cube → terminal_cube.py (common ask in specs)
-    if ("cube" in low and ("3d" in low or "3 d" in low or "terminal" in low)) or "terminal_cube" in low:
-        return "terminal_cube.py"
+    """When the goal does not mention a .py file but we could infer one from context.
+    Kept for future generic heuristics. No project-specific inference (e.g. no cube.py)
+    so the tool stays agnostic for Java, Go, etc."""
     return None
 
 
@@ -324,6 +320,62 @@ def _looks_like_read_only_goal(goal: str) -> bool:
 
 # Basenames that must not be overwritten unless the user explicitly asked to create/modify them
 _PROTECTED_DOC_BASENAMES = frozenset({"readme.md", "license", "contributing.md", "license.md", "contributing"})
+
+# Phrases that indicate the model sent a placeholder instead of real content for write_file
+_WRITE_FILE_PLACEHOLDER_PHRASES = (
+    "update with code above",
+    "see above",
+    "code above",
+    "content above",
+    "same as above",
+    "as above",
+    "insert code above",
+    "use the code above",
+    "the code above",
+    "see code above",
+    "use code above",
+    "replace with code above",
+    "paste the code above",
+)
+
+
+def _is_write_file_placeholder(content: Any, path: str) -> bool:
+    """True if content looks like a placeholder instead of actual file body."""
+    if not isinstance(content, str):
+        return True
+    s = content.strip().lower()
+    # CRITICAL: Prevent accidental truncation/wipe. Empty content is rejected as placeholder
+    # unless it's a known empty file intent (rare for 7B models).
+    if not s:
+        return True
+    if any(phrase in s for phrase in _WRITE_FILE_PLACEHOLDER_PHRASES):
+        return True
+    # Very short content for a .py file with no newline is suspicious
+    if path.lower().endswith(".py") and len(s) < 40 and "\n" not in content:
+        return True
+    return False
+
+
+def _py_compile_check(file_path: Path, root: str) -> tuple[bool, str]:
+    """Run py_compile on a .py file. Returns (success, stderr_or_ok_message)."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "py_compile", str(file_path)],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            timeout=10,
+        )
+        if proc.returncode == 0:
+            return True, "Syntax check: OK"
+        err = (proc.stderr or proc.stdout or "").strip()
+        return False, err or "py_compile failed"
+    except subprocess.TimeoutExpired:
+        return False, "py_compile timeout"
+    except Exception as e:
+        return False, str(e)
+
+
 _WRITE_LIKE_KEYWORDS = (
     "crée", "créer", "réécris", "réécrire", "modifie", "modifier", "write", "create",
     "update", "remplace", "replace", "édite", "edit", "overwrite", "écris", "écrire",
@@ -598,6 +650,9 @@ def _repair_guidance_for_failure(command: str, observation: str) -> str:
     obs_lower = (observation or "").lower()
     if "syntaxerror" in obs_lower:
         hints = []
+        # When error points to a specific line, prefer edit_file and only that zone
+        if re.search(r"\bline\s+\d+", obs_lower) or re.search(r'file\s+["\'][^"\']+["\']\s*,\s*line', obs_lower):
+            hints.append("Si l'erreur pointe une ligne précise (ex. line 82), modifie uniquement ce bloc avec **edit_file** (diff minimal), pas write_file en entier.")
         if "parenthesized" in obs_lower or "cannot be parenthesized" in obs_lower:
             hints.append("Python 3 only: tuple unpacking in function parameters is invalid (e.g. def f((x,y))). Use def f(x, y) or unpack inside the function body.")
         if "f-string" in obs_lower or "single '}'" in obs_lower:
@@ -622,10 +677,14 @@ def _repair_guidance_for_failure(command: str, observation: str) -> str:
 
 
 def _is_simple_fix_failure(observation: str) -> bool:
-    """True when the failure is typically fixed by a one-line or minimal change (e.g. add missing import)."""
+    """True when the failure is typically fixed by a one-line or minimal change (e.g. add missing import, fix one line)."""
     low = (observation or "").lower()
     if "nameerror" in low or "importerror" in low or "modulenotfounderror" in low:
         if "not defined" in low or "forget to import" in low or "cannot import" in low:
+            return True
+    # SyntaxError / IndentationError with a specific line (File "...", line N) → localized fix with edit_file
+    if "syntaxerror" in low or "indentationerror" in low:
+        if re.search(r"\bline\s+\d+", low) or re.search(r'file\s+["\'][^"\']+["\']\s*,\s*line', low):
             return True
     return False
 
@@ -655,6 +714,21 @@ def _strict_success_response(strict_target: str, requested_commands: list[str]) 
     if requested_commands:
         return f"{label} a été écrit puis validé/exécuté avec succès.\n\nStatus: DONE"
     return f"{label} a été écrit avec succès.\n\nStatus: DONE"
+
+
+def _fix_final_response_py_path(content: str, strict_target: str | None) -> str:
+    """Replace wrong .py filename in final response with actual strict_target (e.g. wrong name from comment → correct path)."""
+    if not content or not strict_target:
+        return content
+    correct_name = Path(strict_target).name
+    if not correct_name.endswith(".py"):
+        return content
+    # Replace any other .py filename mentioned in the response with the actual target name
+    for m in re.finditer(r"\b([a-zA-Z0-9_\-]+\.py)\b", content):
+        wrong = m.group(1)
+        if wrong != correct_name:
+            content = content.replace(wrong, correct_name)
+    return content
 
 
 def _normalize_exact_content(text: str) -> str:
@@ -846,8 +920,8 @@ def _summarize_failure_for_user(observation: str, turn: TurnState | None = None)
     if "syntaxerror" in lower or "nameerror" in lower or "typeerror" in lower or "traceback" in lower:
         return (
             f"{bilan}{label} a bien été généré, mais il échoue encore à l’exécution ou à la validation Python. "
-            "Le modèle n’a pas terminé correctement la correction du fichier avant la fin du tour. "
-            "La prochaine étape logique est une réécriture ciblée du fichier puis une relance de la validation demandée.\n\n"
+            "Le modèle n’a pas terminé correctement la correction du fichier. "
+            "Vous pouvez corriger à la main ou relancer la tâche.\n\n"
             f"Détail technique : {raw}"
         )
     return (
@@ -889,7 +963,7 @@ def _build_turn_state(goal: str, session_id: str, root: str) -> TurnState:
         strict_target_rel=_normalize_workspace_path(strict_target, root) if strict_target else "",
         stdlib_only_required=_stdlib_only_requested(goal),
         requested_commands=strict_requested_commands,
-        repair_budget=2,
+        repair_budget=3,
         exact_content_expected=strict_exact_content,
         exact_content_satisfied=strict_exact_content is None,
     )
@@ -977,14 +1051,20 @@ def _build_deterministic_batch_if_possible(
         turn.deterministic_tool_calls = calls
         return calls, flags
 
+    # Autonomy: after writing a .py, run it even if user didn't ask to "execute" (default: python3 <file>)
+    default_py_run = None
+    if turn.strict_target and str(turn.strict_target).lower().endswith(".py"):
+        default_py_run = f"python3 {Path(turn.strict_target).name}"
+    effective_next_command = next_requested_command or default_py_run
+
     if (
         turn.strict_target
         and turn.target_written
-        and next_requested_command
+        and effective_next_command
         and not turn.failed_validation_command
     ):
         flags["inject_required_shell"] = True
-        calls = [{"name": "run_shell", "arguments": {"command": next_requested_command}}]
+        calls = [{"name": "run_shell", "arguments": {"command": effective_next_command}}]
         turn.deterministic_tool_calls = calls
         return calls, flags
 
@@ -1089,6 +1169,39 @@ class Agent:
         retry_engine = RetryEngine(RetryConfig.from_env())
         turn = _build_turn_state(goal, session_id, self.root)
 
+        # When the task targets an existing file to complete/modify, remind to read first and inject content (explore-then-edit)
+        if turn.strict_target and turn.strict_target_rel:
+            try:
+                target_path = (Path(self.root) / turn.strict_target_rel).resolve()
+                if target_path.is_file():
+                    low = (goal or "").lower()
+                    if any(
+                        kw in low
+                        for kw in (
+                            "complète", "complete", "modif", "implement", "remplis", "remplir",
+                            "to do", "# to do", "pseudo-code", "pseudocode", "squelette", "skeleton",
+                        )
+                    ):
+                        read_first_hint = (
+                            f"Rappel : le fichier `{turn.strict_target}` existe déjà. "
+                            "Appelle read_file sur ce fichier en premier pour voir son contenu (ex. les # TO DO ou le squelette), puis utilise edit_file ou write_file pour le compléter."
+                        )
+                        self.history.append({"role": "user", "content": read_first_hint})
+                        save_db_message(session_id, "user", read_first_hint, log_type="context")
+                        # Pre-inject file content so the model has it in context without calling read_file (explore-first)
+                        try:
+                            content = read_repo_file(target_path)
+                            max_inject = 12_000
+                            if len(content) > max_inject:
+                                content = content[:max_inject].rstrip() + f"\n\n… (tronqué, {len(content)} chars au total)"
+                            inject_msg = f"Contenu actuel de `{turn.strict_target}` (à utiliser pour compléter/modifier) :\n\n```\n{content}\n```"
+                            self.history.append({"role": "user", "content": inject_msg})
+                            save_db_message(session_id, "user", inject_msg, log_type="context")
+                        except (OSError, ValueError):
+                            pass
+            except (OSError, ValueError):
+                pass
+
         telemetry = TelemetryEmitter(
             emit_execution_event=ui.emit_execution_event,
             total_retries_provider=lambda: retry_engine.total_retries_used
@@ -1121,7 +1234,7 @@ class Agent:
             else:
                 # Only show "thinking" when we're about to call the LLM (not for deterministic list/read)
                 await ui.status(True)
-                # Stream response tokens to UI in real-time
+                # Phase 1 refactor: do not stream draft to UI (suppress bloat); user sees only status then tool_call/tool_result or final response
                 async def _on_response_chunk(delta: str) -> None:
                     await _emit_response_draft(ui, turn, delta)
 
@@ -1190,7 +1303,8 @@ class Agent:
                 )
 
             if tool_calls and not deterministic_calls:
-                await _discard_response_draft(ui, turn)
+                # Keep the streamed draft visible so the user sees the model generating (e.g. edit_file payload)
+                # instead of hiding it and only showing the tool card.
                 _append_assistant_history(self.history, _canonical_tool_history_content(tool_calls))
 
             # LIST FILES: if user just asked to list (previous message) and model did anything else, force list_files
@@ -1288,6 +1402,10 @@ class Agent:
                 _debug_log(f"No tool call detected. Pruned blather. Feedback: {feedback}")
                 continue
 
+            # Phase 1 refactor: discard draft so user sees only tool timeline (no raw stream wall)
+            if tool_calls:
+                await _discard_response_draft(ui, turn)
+
             abort_strict_turn = False
             for tc in tool_calls:
                 func_name = tc.get("name")
@@ -1346,6 +1464,24 @@ class Agent:
                         await ui.emit_execution_event("tool_result", obs, phase="tool_use", meta={"tool": func_name, "success": False})
                         self.history.append({"role": "user", "content": f'<tool_observation name="{func_name}">\n{obs}\n</tool_observation>'})
                         save_db_message(session_id, "user", self.history[-1]["content"], log_type="context")
+                        continue
+                    content_str = (content_val if isinstance(content_val, str) else str(content_val)).strip()
+                    if _is_write_file_placeholder(content_str, path_val):
+                        obs = (
+                            'Error: write_file "content" must be the COMPLETE file content, not a placeholder or empty string. '
+                            'The content you provided looks like a placeholder or was truncated (empty). '
+                            'Do NOT call read_file again — you already have the file content from your previous read. '
+                            'Your next call must be write_file(path, content) with the FULL script in the "content" argument.'
+                        )
+                        await ui.emit_execution_event("tool_result", obs, phase="tool_use", meta={"tool": func_name, "success": False})
+                        self.history.append({"role": "user", "content": f'<tool_observation name="{func_name}">\n{obs}\n</tool_observation>'})
+                        save_db_message(session_id, "user", self.history[-1]["content"], log_type="context")
+                        # Steer model to write_file instead of looping on read_file (self-correction)
+                        placeholder_reminder = (
+                            "Do not call read_file again. Your next action must be a single write_file with the complete file content (the full code)."
+                        )
+                        self.history.append({"role": "user", "content": placeholder_reminder})
+                        save_db_message(session_id, "user", placeholder_reminder, log_type="context")
                         continue
 
                 command_arg = str(args.get("command") or "").strip() if func_name in ("run_shell", "exec_shell_session") else ""
@@ -1478,6 +1614,24 @@ class Agent:
                     retry_engine=retry_engine,
                 )
 
+                # Patch 1: after write_file to .py, run py_compile; if it fails, treat as failure so we don't set target_written
+                if (
+                    func_name == "write_file"
+                    and outcome.success
+                    and path_arg
+                    and str(path_arg).lower().endswith(".py")
+                ):
+                    full_path = (Path(self.root) / normalized_path_arg).resolve() if normalized_path_arg else (Path(self.root) / path_arg).resolve()
+                    if full_path.is_file():
+                        py_ok, py_err = _py_compile_check(full_path, self.root)
+                        if not py_ok:
+                            outcome.observation = (
+                                "Error: Syntax check (py_compile) failed:\n"
+                                + (py_err or "unknown")
+                                + "\n\n(File was written but has syntax errors. Fix them then call run_shell to validate.)\n\n---\n\n"
+                                + (outcome.observation or "")
+                            )
+
                 if outcome.success:
                     any_tool_succeeded = True
                 turn.mark_tool_result(func_name or "", outcome.observation, outcome.success)
@@ -1486,6 +1640,7 @@ class Agent:
                     turn.repair_reads += 1
                 if turn.strict_target and func_name == "write_file" and outcome.success and normalized_path_arg == turn.strict_target_rel:
                     turn.target_written = True
+                    turn.validated_after_last_write = False  # Next run_shell on target will set it True if it succeeds
                     turn.exact_content_denials = 0
                     if turn.exact_content_expected is not None:
                         turn.exact_content_satisfied = (
@@ -1494,6 +1649,8 @@ class Agent:
                     if turn.failed_validation_command:
                         turn.repair_rewritten = True
                 if turn.strict_target and func_name in ("run_shell", "exec_shell_session") and outcome.success:
+                    if _command_targets_strict_file(command_arg, turn.strict_target, self.root):
+                        turn.validated_after_last_write = True  # This run targeted the file and succeeded (after the last write)
                     matched_requested = _matching_requested_command(command_arg, turn.requested_commands, turn.strict_target, self.root)
                     if matched_requested:
                         turn.mark_requested_command_completed(matched_requested)
@@ -1519,7 +1676,24 @@ class Agent:
 
                 obs = outcome.observation
                 if "BLOCKED_REPEAT" in obs:
-                    obs = obs.rstrip() + "\nDo not call any tool again. Reply with Status: FAILED and a one-sentence explanation for the user."
+                    if func_name == "read_file":
+                        obs = obs.rstrip() + "\nYour next call must be write_file(path, content) with the full file content. Do not call read_file again."
+                    else:
+                        obs = obs.rstrip() + "\nDo not call any tool again. Reply with Status: FAILED and a one-sentence explanation for the user."
+                # When in strict-target turn, read_file failed with "file not found" and model used wrong path (e.g. name from a comment): remind target path
+                if (
+                    func_name == "read_file"
+                    and not outcome.success
+                    and turn.strict_target
+                    and "file not found" in (outcome.observation or "").lower()
+                    and normalized_path_arg
+                    and normalized_path_arg != turn.strict_target_rel
+                ):
+                    obs = (
+                        obs.rstrip()
+                        + f"\n\nRappel: le fichier cible de cette tâche est `{turn.strict_target_rel}`. "
+                        "Utilise ce chemin pour read_file et run_shell (pas un autre nom, ex. pas le nom dans un commentaire du fichier)."
+                    )
                 # Truncate huge observations in history so the model doesn't "continue" them next turn
                 if len(obs) > _MAX_HISTORY_OBS_CHARS:
                     obs = (
@@ -1530,6 +1704,18 @@ class Agent:
                 self.history.append({"role": "user", "content": obs})
                 save_db_message(session_id, "user", obs, log_type="context")
 
+                # Patch 2: after BLOCKED_REPEAT on read_file, inject explicit user message so next action is write_file not another read
+                if (
+                    func_name == "read_file"
+                    and "BLOCKED_REPEAT" in (outcome.observation or "")
+                ):
+                    blocked_read_hint = (
+                        "Tu as déjà lu ce fichier. Ta **seule** prochaine action pour avancer est : **write_file**(path, content) avec le contenu **complet** du fichier. "
+                        "Ne rappelle pas read_file. Si tu n'as plus le contenu en contexte, envoie write_file avec tout le code du fichier (celui que tu as lu ou que tu dois produire)."
+                    )
+                    self.history.append({"role": "user", "content": blocked_read_hint})
+                    save_db_message(session_id, "user", blocked_read_hint, log_type="context")
+
                 # When edit_file is rejected due to syntax, steer model toward write_file to avoid retry loop → BLOCKED_REPEAT
                 if (
                     func_name == "edit_file"
@@ -1538,7 +1724,8 @@ class Agent:
                 ):
                     edit_feedback = (
                         "L'édition a été rejetée car le fichier aurait une erreur de syntaxe. "
-                        "Utilise write_file pour remplacer tout le fichier avec un contenu corrigé, au lieu de réessayer edit_file."
+                        "Pour des changements sur tout le fichier (ex. remplacer plusieurs TODO), utilise **write_file** avec le contenu complet — c'est plus fiable qu'edit_file avec une seule instruction. "
+                        "Sinon utilise write_file pour remplacer tout le fichier avec un contenu corrigé, au lieu de réessayer edit_file."
                     )
                     self.history.append({"role": "user", "content": edit_feedback})
                     save_db_message(session_id, "user", edit_feedback, log_type="context")
@@ -1550,6 +1737,7 @@ class Agent:
                         if turn.slope_trailing_response
                         else _strict_success_response(turn.strict_target, turn.requested_commands)
                     )
+                    final_response = _fix_final_response_py_path(final_response, turn.strict_target)
                     self.history.append({"role": "assistant", "content": final_response})
                     await ui.emit_execution_event(
                         "response", final_response, phase="done",
@@ -1565,13 +1753,16 @@ class Agent:
                     and func_name in ("run_shell", "exec_shell_session")
                     and not outcome.success
                     and _is_validation_failure_observation(outcome.observation)
+                    and _is_repairable_requested_command(command_arg, turn.strict_target, self.root)
                 ):
+                    # Autonomy: repair when running the target .py failed, even if user didn't ask to "run" (e.g. "complete cube.py" only)
                     matched_requested = _matching_requested_command(command_arg, turn.requested_commands, turn.strict_target, self.root)
-                    if matched_requested and _is_repairable_requested_command(command_arg, turn.strict_target, self.root):
-                        if turn.failed_validation_command == matched_requested:
+                    command_to_rerun = matched_requested or command_arg
+                    if command_to_rerun:
+                        if turn.failed_validation_command == command_to_rerun:
                             turn.repair_attempts += 1
                         else:
-                            turn.failed_validation_command = matched_requested
+                            turn.failed_validation_command = command_to_rerun
                             turn.repair_attempts = 1
                         turn.repair_reads = 0
                         turn.repair_rewritten = False
@@ -1583,8 +1774,8 @@ class Agent:
                         if turn.repair_attempts >= turn.repair_budget:
                             user_error = _summarize_failure_for_user(outcome.observation, turn)
                             final_error = (
-                                f"Validation a échoué {turn.repair_attempts} fois pour `{Path(turn.strict_target).name}`. "
-                                "Arrêt après la boucle de correction bornée.\n\nStatus: FAILED"
+                                f"Validation a échoué après {turn.repair_attempts} tentative(s) pour `{Path(turn.strict_target).name}`. "
+                                "Le script a été généré mais des erreurs restent. Vous pouvez corriger à la main ou relancer.\n\nStatus: FAILED"
                             )
                             self.history.append({"role": "assistant", "content": final_error})
                             await ui.emit_execution_event("error", user_error, phase="done", meta={"final": True})
@@ -1598,8 +1789,9 @@ class Agent:
                                 else "Prochaine action : corrige l'erreur avec un seul **write_file** sur ce fichier, puis relance la même validation. "
                                 "Réécris le fichier **en entier** (pas de modification partielle) ; ne modifie pas les séquences d'échappement (\\033, \\x1b) dans les chaînes. "
                             )
-                            + "N'appelle pas run_shell tant que le fichier n'est pas corrigé. Évite read_file en boucle ou d'autres outils inutiles. "
-                            "Tu peux lire la cible une fois si nécessaire, puis la réécrire avec write_file, puis relancer exactement la même validation."
+                            + " Si l'erreur pointe une ligne ou un bloc précis (ex. File \"...\", line 82), modifie uniquement cette zone avec **edit_file** (diff minimal). "
+                            + " N'appelle pas run_shell tant que le fichier n'est pas corrigé. Évite read_file en boucle ou d'autres outils inutiles. "
+                            + " Tu peux lire la cible une fois si nécessaire, puis la réécrire avec write_file, puis relancer exactement la même validation."
                             + _repair_guidance_for_failure(command_arg, outcome.observation)
                         )
                         self.history.append({"role": "user", "content": repair_feedback})
@@ -1611,6 +1803,7 @@ class Agent:
                         if turn.slope_trailing_response
                         else _strict_success_response(turn.strict_target, turn.requested_commands)
                     )
+                    final_response = _fix_final_response_py_path(final_response, turn.strict_target)
                     self.history.append({"role": "assistant", "content": final_response})
                     await ui.emit_execution_event(
                         "response", final_response, phase="done",
@@ -1722,6 +1915,7 @@ class Agent:
             if turn.slope_trailing_response
             else last_response
         )
+        final_response = _fix_final_response_py_path(final_response, turn.strict_target if turn else None)
         await ui.emit_execution_event(
             "response", final_response, phase="done",
             meta={"final": True, "slope_trailing": bool(turn.slope_trailing_response)},

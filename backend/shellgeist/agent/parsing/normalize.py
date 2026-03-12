@@ -63,6 +63,7 @@ def normalize_write_file_content(content: str) -> str:
 
     - Leading ```python or ``` → removed (content only).
     - Trailing }} or }}..., Status: DONE, Status: FAILED... → removed.
+    - Double-escaped ANSI in strings: \\\\033 → \\033 so colors work (common LLM mistake in JSON).
     Use for every write_file payload so that when the model sends code in a block
     or bleeds protocol into content, we still write clean code.
     """
@@ -70,6 +71,8 @@ def normalize_write_file_content(content: str) -> str:
     if not s:
         return s
     s = strip_fences(s)
+    # Fix double-escaped ANSI: in JSON the model often sends \\033 which becomes literal \033 in file (wrong). We want single \033.
+    s = re.sub(r"\\\\033", r"\\033", s)
     for _ in range(3):
         prev = s
         s = _WRITE_FILE_JUNK_RE.sub("", s).strip()

@@ -81,7 +81,8 @@ def get_session_history(session_id: str, for_ui: bool = False) -> list[dict[str,
             history.append({"role": log_type or "thought", "content": content})
             continue
 
-        if role == "user" and for_ui and (log_type == "context" or content.strip().startswith("<tool_observation")):
+        # Include tool_observation messages in UI history so the sidebar shows read_file/write_file/etc.
+        if role == "user" and for_ui and log_type == "context" and not content.strip().startswith("<tool_observation"):
             continue
 
         if role in ("assistant", "tool"):
@@ -166,6 +167,7 @@ class TurnState:
     exact_content_satisfied: bool = True
     exact_content_denials: int = 0
     target_written: bool = False
+    validated_after_last_write: bool = False  # True only after a run_shell (on target) succeeded *after* the last write_file
     failed_validation_command: str | None = None
     repair_reads: int = 0
     repair_rewritten: bool = False
@@ -206,10 +208,16 @@ class TurnState:
     def can_finalize_strict(self) -> bool:
         if not self.strict_target or not self.exact_content_satisfied:
             return False
-        # All requested validation commands completed => success even if we didn't write in this turn (e.g. "réécris puis exécute" and model only ran existing file)
-        if self.requested_commands and all(cmd in self.completed_commands for cmd in self.requested_commands) and not self.failed_validation_command:
-            return True
-        return bool(self.target_written and all(cmd in self.completed_commands for cmd in self.requested_commands))
+        # Must have written the target file before we can say "écrit puis validé" (avoid claiming success when model only ran run_shell on old file)
+        if not self.target_written:
+            return False
+        # When user asked to run the script: require that a run_shell on the target succeeded *after* the last write (avoid "validé" when run was on old file then write broke it)
+        if self.requested_commands:
+            if not all(cmd in self.completed_commands for cmd in self.requested_commands) or self.failed_validation_command:
+                return False
+            if not self.validated_after_last_write:
+                return False
+        return True
 
 
 # ---------------------------------------------------------------------------
