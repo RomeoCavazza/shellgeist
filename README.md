@@ -45,11 +45,9 @@ ShellGeist is an **academic-grade AI code assistant** for Neovim, designed as bo
 
 Check out ShellGeist in action through these different lenses.
 
-````carousel
 ![New File Creation](assets/new-file.png)
-<!-- slide -->
+
 ![Full Project Configuration](assets/full-config.png)
-````
 
 ---
 
