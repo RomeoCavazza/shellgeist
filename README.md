@@ -39,19 +39,7 @@ ShellGeist is an **academic-grade AI code assistant** for Neovim, designed as bo
 - **Agentic Autonomy**: Advanced logic for intent classification, deterministic shortcuts, and self-repairing loops.
 - **Academic Standards**: Clean modular architecture, complete technical specifications, and reproducible environments via Nix.
 
----
-
-## Preview
-
-Check out ShellGeist in action through these different lenses.
-
-![New File Creation](assets/new-file.png)
-
-![Full Project Configuration](assets/full-config.png)
-
----
-
-## Project Structure
+### Project Structure
 
 ```text
 .
@@ -65,6 +53,16 @@ Check out ShellGeist in action through these different lenses.
 
 > [!IMPORTANT]
 > For in-depth analysis of functions, state variables, and design patterns, refer to the [Technical Documentation Portal](docs/README.md).
+
+---
+
+## Preview
+
+Check out ShellGeist in action through these different lenses.
+
+![New File Creation](assets/new-file.png)
+
+![Full Project Configuration](assets/full-config.png)
 
 ---
 
