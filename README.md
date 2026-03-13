@@ -13,16 +13,16 @@
 </pre>
 
 <p align="center">
+  <img src="assets/shellgeist.png" alt="ShellGeist" width="720" style="display: block; margin-left: auto; margin-right: auto;" />
+</p>
+
+<p align="center">
   <a href="https://github.com/RomeoCavazza/shellgeist/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+" /></a>
   <a href="https://neovim.io/"><img src="https://img.shields.io/badge/Neovim-0.9+-57A143?logo=neovim" alt="Neovim 0.9+" /></a>
   <a href="https://www.lua.org/"><img src="https://img.shields.io/badge/Lua-5.1+-2C2D72?logo=lua" alt="Lua 5.1+" /></a>
   <a href="https://nixos.org/"><img src="https://img.shields.io/badge/Nix-flake-5277C3?logo=nixos" alt="Nix flake" /></a>
   <a href="https://github.com/ollama/ollama"><img src="https://img.shields.io/badge/Ollama-compatible-000000" alt="Ollama" /></a>
-</p>
-
-<p align="center">
-  <img src="assets/shellgeist.png" alt="ShellGeist" width="720" style="display: block; margin-left: auto; margin-right: auto;" />
 </p>
 
 ---
