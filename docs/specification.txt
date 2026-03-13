@@ -1,73 +1,131 @@
 ================================================================================
-shellgeist — Technical Specification & Logic Dictionary
+shellgeist — Dense Technical Specification & Logic Dictionary
 ================================================================================
+Documentation Version: 2.0 (Massive Expansion)
+Project Type: Academic AI Agent Workspace / High-Performance Neovim Assistant
 
 --------------------------------------------------------------------------------
-1. Core Architecture
+1. GLOBAL ARCHITECTURE & CONTROL FLOW
 --------------------------------------------------------------------------------
-Architecture Pattern
-  Decentralized: UI (Lua) decoupled from Agent Loop (Python) via Unix Domain Sockets.
+Architecture Pattern: Decentralized Runtime
+  The project follows a "Cognition/Execution" split. Cognition (Agent Loop) resides
+  in a Python daemon, while Execution (User Interaction) is handled by Neovim (Lua).
+  Communication occurs via a bidirectional Unix Domain Socket (UDS) protocol.
 
-Frontend (nvim/lua/shellgeist/)
-  sidebar.lua: Chat/audit UI using nui.nvim.
-  rpc.lua: JSON-lines socket client implementation.
-  conflict.lua: Inline diff/conflict resolution panel.
-  health.lua: Check for daemon and model availability.
-
-Backend (backend/shellgeist/)
-  Agentic core managing state, tool lifecycle, and LLM communication.
-  runtime/server.py: Unix socket server (RequestHandler.__call__).
-  cli.py: Main entry point for the `sgd` daemon.
-
-Communication
-  JSON-lines protocol over `/tmp/shellgeist.sock` (default).
+Signal Path:
+  [UI: Lua] -> [Socket: JSON-Lines] -> [Runtime: RequestHandler] ->
+  [Cognition: Agent.run_task] -> [Tools: Executor] -> [System: Shell/FS]
 
 --------------------------------------------------------------------------------
-2. Agent Reasoning (backend/shellgeist/agent/)
+2. BACKEND: AGENTIC CORE (backend/shellgeist/agent/)
 --------------------------------------------------------------------------------
-loop.py (Agent Loop)
-  orchestrates user goal -> final response.
-  _MAX_HISTORY_OBS_CHARS (2800): Cap for tool results in history.
-  _MAX_HISTORY_ASSISTANT_CHARS (4000): Cap for agent responses.
-  _PROTECTED_DOC_BASENAMES: [README.md, LICENSE, docs/] - require verification.
 
-orchestrator.py (Cognitive Logic)
-  classify_model_turn: Tool call vs Response vs Salvage.
-  salvage_slope_to_tool_calls: Recovers XML tags from raw LLM output.
-  decide_no_tool_action: Recovery planning when no tools are selected.
+loop.py — The Cognitive Engine
+  Main Class: Agent(root)
+  Core Method: run_task(goal, ...) -> Incremental state machine.
+  Logic Constants:
+    - _MAX_HISTORY_OBS_CHARS (2800): Prevents tool-output bloat in LLM context.
+    - _MAX_TURNS (15-25): Circuit breaker for infinite loops.
+    - _SYSTEM_PROMPT_VERSION: Tracks the maturity of agent instructions.
+  Internal Logic:
+    1. Context Loading: Aggregates repo map, git status, and recent history.
+    2. Model Turn: Invokes LLM with current state.
+    3. Parsing: Extracts tool_use blocks (XML/JSON hybrid).
+    4. Execution: Dispatches tools and captures observations.
+    5. Repair: Handles tool failures via re-execution with feedback.
 
---------------------------------------------------------------------------------
-3. Tool Library (backend/shellgeist/tools/)
---------------------------------------------------------------------------------
-executor.py
-  Executes batches, handles errors, and formats observations for the loop.
+orchestrator.py — Cognitive Heuristics
+  Main Function: classify_model_turn(response_text)
+  Heuristics:
+    - salvage_slope_to_tool_calls: Recovers orphaned tool tags using regex.
+    - detect_continuation: Identifies when the LLM cut off mid-sentence.
+    - is_no_op_turn: Detects loops where the agent repeats the same thought.
+  Decision Engine:
+    - FAMILY_MODEL: Pure LLM-driven choice.
+    - FAMILY_HEURISTIC: Hardcoded safety fallbacks and guardrails.
 
-fs.py (Filesystem)
-  read_file, write_file, list_files, find_by_name. Strict schema enforcement.
-
-shell.py (Execution)
-  run_shell, exec_shell_session. Sandbox-aware.
-
-edit.py (Refinement)
-  edit_file: Natural language based diff generation.
-
---------------------------------------------------------------------------------
-4. Research & Logic Flows
---------------------------------------------------------------------------------
-Intent Classification
-  FAMILY_MODEL (Probabilistic) vs FAMILY_HEURISTIC (Deterministic).
-
-Self-Repair Cycle
-  ObserveResult -> IsSuccess -> (if No) RepairOnce -> Re-execute.
+messages.py — State Representation
+  Data Structures: Message class (role, content, timestamp).
+  Role Normalization: system, user, assistant, tool, log (UI-only).
 
 --------------------------------------------------------------------------------
-5. Environment & Lifecycle
+3. BACKEND: TOOL LIBRARY (backend/shellgeist/tools/)
+--------------------------------------------------------------------------------
+
+fs.py — Filesystem Interface
+  Tools: read_file, write_file, list_files, find_files, get_repo_map.
+  Security Guards:
+    - resolve_repo_path: Enforces that all operations stay within the workspace root.
+    - normalize_write_file_content: Strips markdown fences from LLM responses.
+    - write_file logic: Compiles Python code before writing to verify syntax.
+
+shell.py — Process Execution
+  Tools: run_shell (stateless), start_shell_session (persistent PTY).
+  PTY Manager (PTYShellManager):
+    - Manages concurrent Unix pseudo-terminals.
+    - Handles ANSI stripping for cleaner LLM injection.
+    - Implements marker-based exit code detection in persistent sessions.
+  Safety: is_blocked(command) — regex-based blacklist for destructive operations.
+
+edit.py — Semantic Patching
+  Tool: edit_file (Plan -> Apply -> Verify).
+  Logic:
+    - edit_plan: Uses a dedicated "Edit Model" call to generate unified diffs.
+    - apply_unified_diff: Internal patch engine (no external `patch` binary dependency).
+    - guard_blocked: Rejects edits that rewrite >70% of a file or break syntax.
+    - Full-text Fallback: Automatically rewrites the whole file if a patch fails twice.
+
+executor.py — Execution Pipeline
+  Main Function: execute_tool_call
+  Responsibilities: capture stdout/stderr, handle timeouts, and format "Observation"
+  cards for the LLM's next turn.
+
+patch.py — Diff Logic
+  Internal implementation of `apply_unified_diff` with fuzzy matching and 
+  multi-hunk coordination.
+
+--------------------------------------------------------------------------------
+4. BACKEND: RUNTIME & INFRASTRUCTURE (backend/shellgeist/runtime/)
+--------------------------------------------------------------------------------
+
+server.py — RPC Daemon
+  Logic: asyncio.start_unix_server listening on /tmp/shellgeist.sock.
+  Routing: handle_request maps JSON 'cmd' (ping, agent_task, edit, etc.) to tools.
+  State: Maintains _agent_cache to prevent re-initializing agents per turn.
+
+session.py — Persistence & History
+  Database: SQLite (messages table).
+  Repair Logic: repair_conversation_history — merges consecutive same-role messages,
+  prunes old turns, and ensures the LLM stays focused on the current Goal.
+
+protocol.py — Schema Definition
+  Standardized Pydantic models for every request/result. Strict validation prevents
+  malformed packets from crashing the daemon.
+
+--------------------------------------------------------------------------------
+5. FRONTEND: LUA INTEGRATION (nvim/lua/shellgeist/)
+--------------------------------------------------------------------------------
+
+init.lua — Extension Entry Point
+  Sets up core autocommands and standard keybindings (:SGAgent, :SGSidebar).
+
+sidebar.lua — UI Component
+  Uses `nui.nvim` for rendering a split-pane chat interface.
+  Logic: Stream handling from the Unix socket to real-time UI updates.
+
+rpc.lua — Transport
+  Thin wrapper around `uv.new_pipe`. Handles non-blocking I/O with the backend.
+
+--------------------------------------------------------------------------------
+6. ENVIRONMENT & SYSTEM (Root)
 --------------------------------------------------------------------------------
 flake.nix
-  Reproducible dev environment with Python 3.11, Lua 5.1, and project dependencies.
+  Defines the NixOS development environment.
+  Inputs: nixpkgs (unstable).
+  Packages: Python 3.11, pydantic, anyio, sqlite, nodejs (optional tools).
 
-Usage Commands
-  shellgeist / sgd     Start the backend daemon.
-  :SGSidebar           Toggle UI.
-  :SGAgent             Start task.
-  :SGMode auto/review  Switch autonomy level.
+docs/
+  technical_portal/README.md: Visual entry point.
+  specification.txt: This document.
+  cloc-report.md: Code metrics (updated via Task Boundary scripts).
+  diagrams/: PlantUML/Mermaid sources depicting state transitions.
