@@ -12,9 +12,6 @@
       ░   ░  ░  ░   ░  ░    ░  ░    ░  ░      ░    ░  ░ ░        ░           
 </pre>
 
-<p align="center">
-  <img src="assets/shellgeist.png" alt="ShellGeist" width="720" style="display: block; margin-left: auto; margin-right: auto;" />
-</p>
 
 <p align="center">
   <a href="https://github.com/RomeoCavazza/shellgeist/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
@@ -27,13 +24,13 @@
 
 ---
 
-[Overview](#overview) • 
-[Preview](#preview) • 
-[Project structure](#project-structure) • 
-[Research & Logic](#research--logic) • 
-[Architecture](#architecture) • 
-[Commands](#commands) • 
-[License](#license)
+[Overview](#overview)
+• [Preview](#preview)
+• [Project structure](#project-structure)
+• [Research & Logic](#research--logic)
+• [Architecture](#architecture)
+• [Commands](#commands)
+• [License](#license)
 
 </div>
 
@@ -103,9 +100,17 @@ The root `README.md` is the main source of truth for this repository. Annexes li
 
 Check out ShellGeist in action through these different lenses.
 
-![New File Creation](assets/new-file.png)
+<p align="center">
+  <img src="assets/new-file.png" alt="New File Creation" width="720" />
+</p>
 
-![Full Project Configuration](assets/full-config.png)
+<p align="center">
+  <img src="assets/shellgeist.png" alt="ShellGeist" width="720" />
+</p>
+
+<p align="center">
+  <img src="assets/full-config.png" alt="Full Project Configuration" width="720" />
+</p>
 
 ---
 
