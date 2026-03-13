@@ -4,6 +4,17 @@ Welcome to the in-depth technical documentation for **ShellGeist**. This project
 
 ---
 
+## Table of Contents
+
+- [1. Core Philosophy: The Object of Study](#1-core-philosophy-the-object-of-study)
+- [2. Information Assembly (Context)](#2-information-assembly-context)
+- [3. Safety & Verification (The Guardrails)](#3-safety--verification-the-guardrails)
+- [4. Technical Dictionary](#4-technical-dictionary)
+- [5. Code Statistics (CLOC)](#5-code-statistics-cloc)
+- [6. Architecture & Logic](#6-architecture--logic)
+
+---
+
 ## `docs/` Structure
 
 ```text
@@ -27,7 +38,7 @@ Unlike "black-box" AI assistants, ShellGeist is built on the principle of **Audi
 3.  **Self-Correction**: Detecting tool failures and attempting a repair turn before giving up.
 
 ### Tool Ecosystem Taxonomy
-The agent's capabilities are partitioned into specialized domains to prevent tool-bloat and maintain a narrow focus.
+The agent's capabilities are partitioned into specialized domains to prevent tool-bloat and maintain a narrow focus. Each domain handles a specific subset of environment interactions.
 
 ```mermaid
 graph TD
@@ -44,11 +55,13 @@ graph TD
     ED --> ED_D[natural_language_diff]
 ```
 
+*The diagram above illustrates the modularity of the toolset, where each component is isolated and strictly typed to ensure predictable model behavior.*
+
 ---
 
 ## 2. Information Assembly (Context)
 
-Before every model turn, the **Orchestrator** performs a context assembly to provide the agent with a consistent "worldview".
+Before every model turn, the **Orchestrator** performs a context assembly to provide the agent with a consistent "worldview". This process ensures that the LLM has all necessary project metadata without overwhelming the available token window.
 
 ```mermaid
 graph LR
@@ -67,11 +80,13 @@ graph LR
     end
 ```
 
+*Contextual snapshots include not just the code, but also the environmental state (OS, paths) and version control status to maximize the agent's spatial awareness.*
+
 ---
 
 ## 3. Safety & Verification (The Guardrails)
 
-ShellGeist implements a "Safety Gate" logic to protect critical project files and ensure human supervision in sensitive operations.
+ShellGeist implements a "Safety Gate" logic to protect critical project files and ensure human supervision in sensitive operations. This mechanism acts as a deterministic barrier between the agent's intent and the physical file system.
 
 ```mermaid
 flowchart LR
@@ -88,6 +103,8 @@ flowchart LR
         D[docs/*]
     end
 ```
+
+*Protected files are hard-coded in the orchestrator to prevent accidental or malicious modification by the model during autonomous execution.*
 
 ---
 
@@ -112,7 +129,7 @@ Full report: [**cloc-report.md**](./cloc-report.md).
 ## 6. Architecture & Logic
 
 ### Agent Lifecycle
-The following diagram details how the agent switches between probabilistic decisions and deterministic paths.
+The following diagram details how the agent switches between probabilistic decisions and deterministic paths. The loop is designed to be self-healing, attempting to resolve tool errors before escalating to the user.
 
 ```mermaid
 flowchart TD
@@ -142,8 +159,10 @@ flowchart TD
     FT2 --> Stop
 ```
 
+*The "RepairOnce" branch is a critical feature that allows the agent to hallucinate less by verifying tool outputs against expected schemas.*
+
 ### System Architecture (Distributed)
-Loose coupling between the Python daemon and the Lua plugin via Unix Domain Sockets.
+Loose coupling between the Python daemon and the Lua plugin via Unix Domain Sockets ensures that the UI remains responsive even during heavy processing.
 
 ```mermaid
 graph LR
@@ -180,7 +199,7 @@ graph LR
 ```
 
 ### Execution Sequence
-Typical data flow during a user request.
+Typical data flow during a user request. This asynchronous sequence allows for real-time streaming of model reasoning directly into the Neovim sidebar.
 
 ```mermaid
 sequenceDiagram
